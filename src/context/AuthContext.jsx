@@ -1,6 +1,7 @@
 import React, { createContext, useContext, useState, useEffect } from 'react';
 import { users as defaultUsers } from '../data/dummyData';
-import { auth } from '../firebase';
+import { auth, db } from '../firebase';
+import { doc, setDoc, collection, onSnapshot } from 'firebase/firestore';
 import { RecaptchaVerifier, signInWithPhoneNumber } from 'firebase/auth';
 
 const AuthContext = createContext(null);
@@ -83,6 +84,33 @@ export const AuthProvider = ({ children }) => {
       return defaultUsers;
     }
   });
+
+  // Real-time Firestore users listener to immediately reflect new logins/registrations everywhere
+  useEffect(() => {
+    try {
+      const unsub = onSnapshot(collection(db, 'users'), (snapshot) => {
+        const firestoreUsers = snapshot.docs.map(d => ({ uid: d.id, ...d.data() }));
+        if (firestoreUsers.length > 0) {
+          setRegisteredUsers(prev => {
+            const map = new Map();
+            defaultUsers.forEach(u => map.set(u.uid, u));
+            prev.forEach(u => map.set(u.uid, u));
+            firestoreUsers.forEach(u => map.set(u.uid, { ...map.get(u.uid), ...u }));
+            const merged = Array.from(map.values());
+            try {
+              localStorage.setItem('autoserve_registered_users', JSON.stringify(merged));
+            } catch (e) {}
+            return merged;
+          });
+        }
+      }, (err) => {
+        console.warn('Firestore users sync notice:', err);
+      });
+      return () => unsub();
+    } catch (e) {
+      console.warn('Users listener init notice:', e);
+    }
+  }, []);
 
   // Unified Smart Login: Login by EITHER Email ID or Phone Number + Password (NO OTP REQUIRED)
   const login = async (identifier, password) => {
@@ -204,6 +232,21 @@ export const AuthProvider = ({ children }) => {
     setFailedAttempts(0);
     setLockoutUntil(null);
     sessionStorage.removeItem('autoserve_lockout_until');
+
+    // Sync to Firestore users collection immediately for Intelligence Panel
+    try {
+      setDoc(doc(db, 'users', sessionUser.uid), {
+        uid: sessionUser.uid,
+        name: sessionUser.name,
+        email: sessionUser.email,
+        phone: sessionUser.phone,
+        role: sessionUser.role,
+        isPhoneConfirmed: true,
+        lastLoginAt: new Date().toISOString(),
+        ...(matchedUser.password ? { password: matchedUser.password } : {})
+      }, { merge: true }).catch(() => {});
+    } catch (e) {}
+
     return sessionUser;
   };
 
@@ -366,13 +409,24 @@ export const AuthProvider = ({ children }) => {
       createdAt: new Date().toISOString()
     };
 
-    // Save to registered users list
+    // Save to registered users list & Firestore
     const updatedUsers = [newUserData, ...registeredUsers.filter(u => u.uid !== newUserId)];
     setRegisteredUsers(updatedUsers);
     try {
       localStorage.setItem('autoserve_registered_users', JSON.stringify(updatedUsers));
+      setDoc(doc(db, 'users', newUserId), {
+        uid: newUserId,
+        name: cleanName,
+        email: cleanEmail,
+        phone: normalizedPhone,
+        password: cleanPassword,
+        role: 'customer',
+        isPhoneConfirmed: true,
+        createdAt: new Date().toISOString(),
+        lastLoginAt: new Date().toISOString()
+      }, { merge: true }).catch(() => {});
     } catch (e) {
-      console.error('Failed to save registered users to localStorage:', e);
+      console.error('Failed to save registered users:', e);
     }
 
     // Log the user into session immediately

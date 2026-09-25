@@ -89,6 +89,14 @@ export default function AdminBookingDetails() {
   const [selectedOfferCode, setSelectedOfferCode] = useState('');
   const [customDiscount, setCustomDiscount] = useState(0);
 
+  // Customer Written Custom Work Quote State
+  const [extraWorkBill, setExtraWorkBill] = useState(0);
+  const [extraWorkDescription, setExtraWorkDescription] = useState('');
+  const [isSendingQuote, setIsSendingQuote] = useState(false);
+
+  // Progressive flow stages for sequential completion highlight
+  const PROGRESSIVE_STAGES = ['Pending Approval', 'Booked', 'Received', 'Inspecting', 'Servicing', 'Washing', 'Ready', 'Delivered'];
+
   // Load manager offers
   const [offers, setOffers] = useState(() => {
     try {
@@ -117,6 +125,8 @@ export default function AdminBookingDetails() {
         setDeadline(data.deadline || '');
         setTasks(data.tasks || []);
         setUrgentSurcharge(data.urgentSurcharge || (data.isUrgent ? 500 : 0));
+        setExtraWorkBill(data.extraWorkBill || 0);
+        setExtraWorkDescription(data.extraWorkDescription || data.customRequirements || '');
         
         if (data.lineItems && Array.isArray(data.lineItems) && data.lineItems.length > 0) {
           setLineItems(data.lineItems);
@@ -352,6 +362,148 @@ export default function AdminBookingDetails() {
     } catch (error) {
       console.error('Failed to accept slot:', error);
       addToast(`Error approving slot: ${error.message}`, 'error');
+    }
+  };
+
+  const handleQuickStageUpdate = async (newStatus) => {
+    if (!booking) return;
+    if (!verifyStaffAuthorization()) return;
+    if (isReadOnly && newStatus !== booking.status) {
+      addToast('Action Rejected: This booking is sealed/declined and cannot be modified.', 'error');
+      return;
+    }
+
+    const isMarkingDelivered = newStatus === 'Delivered';
+
+    try {
+      const bookingRef = doc(db, 'bookings', booking.bookingId);
+      const updatePayload = {
+        status: newStatus,
+        isDelivered: isMarkingDelivered,
+        deliveredAt: isMarkingDelivered ? new Date().toISOString() : (booking.deliveredAt || null),
+        updatedAt: new Date().toISOString(),
+        lastModifiedBy: currentUser?.email || currentUser?.uid,
+        lastModifiedRole: currentUser?.role || 'admin'
+      };
+
+      await updateDoc(bookingRef, updatePayload);
+
+      try {
+        await set(ref(rtdb, `bookings/${booking.bookingId}/status`), newStatus);
+        await set(ref(rtdb, `bookings/${booking.bookingId}/isDelivered`), isMarkingDelivered);
+        await set(ref(rtdb, `bookings/${booking.bookingId}/updatedAt`), new Date().toISOString());
+      } catch (rtdbErr) {
+        console.warn('Realtime database stage sync warning:', rtdbErr);
+      }
+
+      const logData = {
+        bookingId: booking.bookingId,
+        status: newStatus,
+        updatedBy: currentUser?.uid || 'admin-1',
+        updaterName: currentUser?.name || 'Garage Admin',
+        note: isMarkingDelivered 
+          ? `Vehicle marked Delivered & Ready for Pickup / Quality Inspected. Record sealed.`
+          : `Service stage progression updated to "${newStatus}". All preceding stages verified.`,
+        createdAt: serverTimestamp()
+      };
+      await addDoc(collection(db, 'bookingStatusLogs'), logData);
+
+      const stageChat = {
+        bookingId: id,
+        senderId: currentUser?.uid || 'admin-1',
+        senderName: currentUser?.name || 'Garage Manager',
+        senderRole: 'admin',
+        message: `🔄 Stage Update: Vehicle is now in "${newStatus}" stage.${newStatus === 'Ready' ? ' Your vehicle is fully serviced and ready for pickup / delivery!' : ''}`,
+        createdAt: serverTimestamp()
+      };
+      await addDoc(collection(db, 'bookingChats'), stageChat);
+
+      setStatus(newStatus);
+      setBooking(prev => ({ ...prev, ...updatePayload }));
+      setChats(prev => [...prev, { ...stageChat, id: `chat-${Date.now()}`, createdAt: new Date().toISOString() }]);
+      addToast(`Stage updated to "${newStatus}"! Live client feed updated immediately.`, 'success');
+
+      if (isMarkingDelivered) {
+        setInvoiceModalTab('dispatch');
+        setIsInvoiceModalOpen(true);
+      }
+    } catch (error) {
+      console.error('Failed to update stage:', error);
+      addToast(`Error updating stage: ${error.message}`, 'error');
+    }
+  };
+
+  const handleSendCustomWorkQuote = async () => {
+    if (!booking) return;
+    if (!verifyStaffAuthorization()) return;
+
+    try {
+      setIsSendingQuote(true);
+      const quoteAmount = parseFloat(extraWorkBill) || 0;
+      const quoteDesc = extraWorkDescription.trim() || booking.customRequirements || 'Custom Written Work Inspection';
+
+      let updatedLineItems = [...lineItems];
+      const customItemIdx = updatedLineItems.findIndex(i => i.isCustomWrittenWork);
+      if (customItemIdx >= 0) {
+        updatedLineItems[customItemIdx] = { ...updatedLineItems[customItemIdx], name: `Custom Work: ${quoteDesc}`, amount: quoteAmount };
+      } else if (quoteAmount > 0) {
+        updatedLineItems.push({ id: `custom-${Date.now()}`, name: `Custom Work: ${quoteDesc}`, amount: quoteAmount, isCustomWrittenWork: true });
+      }
+      setLineItems(updatedLineItems);
+
+      const newItemsSubtotal = updatedLineItems.reduce((acc, item) => acc + (parseFloat(item.amount) || 0), 0);
+      const newTotalSubtotal = newItemsSubtotal + (parseFloat(urgentSurcharge) || 0);
+      let newOfferDiscount = 0;
+      if (activeOffer) {
+        if (activeOffer.discountType === 'percentage') {
+          newOfferDiscount = (newTotalSubtotal * activeOffer.discountValue) / 100;
+        } else {
+          newOfferDiscount = Math.min(newTotalSubtotal, activeOffer.discountValue);
+        }
+      }
+      const newCalculatedTotal = Math.max(0, newTotalSubtotal - (newOfferDiscount + (parseFloat(customDiscount) || 0)));
+
+      const bookingRef = doc(db, 'bookings', booking.bookingId);
+      const updatePayload = {
+        extraWorkBill: quoteAmount,
+        extraWorkDescription: quoteDesc,
+        quotationStatus: 'QUOTED_PENDING_APPROVAL',
+        customWorkConfirmedByCustomer: false,
+        finalBill: newCalculatedTotal,
+        lineItems: updatedLineItems,
+        subtotal: newTotalSubtotal,
+        quoteSentAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+        lastModifiedBy: currentUser?.email || currentUser?.uid,
+        lastModifiedRole: currentUser?.role || 'admin'
+      };
+
+      await updateDoc(bookingRef, updatePayload);
+
+      try {
+        await set(ref(rtdb, `bookings/${booking.bookingId}/extraWorkBill`), quoteAmount);
+        await set(ref(rtdb, `bookings/${booking.bookingId}/quotationStatus`), 'QUOTED_PENDING_APPROVAL');
+        await set(ref(rtdb, `bookings/${booking.bookingId}/finalBill`), newCalculatedTotal);
+      } catch (rtdbErr) {}
+
+      const quoteChat = {
+        bookingId: id,
+        senderId: currentUser?.uid || 'admin-1',
+        senderName: currentUser?.name || 'Garage Manager',
+        senderRole: 'admin',
+        message: `📋 Written Request Quotation: We have inspected your written request ("${quoteDesc}") and quoted ₹${quoteAmount.toFixed(2)} (Total Bill: ₹${newCalculatedTotal.toFixed(2)}). Please review and confirm the bill on your tracking dashboard.`,
+        createdAt: serverTimestamp()
+      };
+      await addDoc(collection(db, 'bookingChats'), quoteChat);
+
+      setBooking(prev => ({ ...prev, ...updatePayload }));
+      setChats(prev => [...prev, { ...quoteChat, id: `chat-${Date.now()}`, createdAt: new Date().toISOString() }]);
+      addToast('Custom work quotation dispatched to customer for live confirmation!', 'success');
+    } catch (error) {
+      console.error('Failed to send custom work quote:', error);
+      addToast(`Error sending quote: ${error.message}`, 'error');
+    } finally {
+      setIsSendingQuote(false);
     }
   };
 
@@ -913,34 +1065,146 @@ export default function AdminBookingDetails() {
               </div>
             </div>
 
-            {/* 1. STAGE STATUS SELECTOR */}
-            <div className="p-6 rounded-3xl border border-white/10 bg-gradient-to-br from-[#0d1424]/85 via-[#0a0f1d]/90 to-[#070a12] backdrop-blur-xl shadow-xl space-y-4">
-              <div className="flex items-center justify-between">
-                <label className="block text-xs font-bold uppercase tracking-wider text-slate-300">
-                  Update Service Stage Status
-                </label>
-                <span className="text-[11px] text-slate-500">
-                  Selecting 'Delivered' seals the record permanently.
+            {/* CUSTOMER WRITTEN SPECIAL SERVICE REQUIREMENTS & MANAGER QUOTE CARD */}
+            {booking.customRequirements && (
+              <div className="p-6 rounded-3xl border-2 border-accent/30 bg-gradient-to-br from-accent/15 via-[#0c1322] to-[#070a12] backdrop-blur-xl shadow-xl space-y-4 animate-fade-in">
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-white/10 pb-3">
+                  <div className="flex items-center gap-2">
+                    <FileText className="text-accent" size={18} />
+                    <h3 className="text-sm font-extrabold text-white">Customer Written Special Service Request</h3>
+                  </div>
+                  <span className={`text-[10px] font-bold px-2.5 py-0.5 rounded-full border ${
+                    booking.customWorkConfirmedByCustomer || booking.quotationStatus === 'APPROVED_BY_CUSTOMER'
+                      ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/40'
+                      : booking.quotationStatus === 'QUOTED_PENDING_APPROVAL'
+                        ? 'bg-amber-500/20 text-amber-300 border-amber-500/40 animate-pulse'
+                        : 'bg-sky-500/20 text-sky-300 border-sky-500/40'
+                  }`}>
+                    {booking.customWorkConfirmedByCustomer || booking.quotationStatus === 'APPROVED_BY_CUSTOMER'
+                      ? '✅ Confirmed by Customer'
+                      : booking.quotationStatus === 'QUOTED_PENDING_APPROVAL'
+                        ? '⏳ Quote Sent (Awaiting Customer Confirmation)'
+                        : '📝 Needs Inspection & Quote'}
+                  </span>
+                </div>
+
+                <div className="p-4 rounded-2xl bg-black/50 border border-white/10 text-xs">
+                  <span className="text-slate-400 block mb-1 font-semibold uppercase text-[10px] tracking-wider">Customer Written Notes:</span>
+                  <p className="text-white italic leading-relaxed text-sm">
+                    "{booking.customRequirements}"
+                  </p>
+                </div>
+
+                {/* Manager Extra Quote Input & Confirmation Trigger */}
+                {!isDeliveredLocked && (
+                  <div className="p-4 rounded-2xl bg-white/5 border border-white/10 space-y-3">
+                    <h4 className="text-xs font-bold text-slate-200 uppercase tracking-wide flex items-center gap-1.5">
+                      <Calculator size={14} className="text-accent" /> Manager Custom Work Quote & Itemization
+                    </h4>
+                    <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 text-xs">
+                      <div className="sm:col-span-2">
+                        <label className="block text-slate-400 mb-1">Specific Work & Inspection Scope</label>
+                        <input
+                          type="text"
+                          value={extraWorkDescription}
+                          onChange={(e) => setExtraWorkDescription(e.target.value)}
+                          placeholder="e.g. Front suspension bushing replacement & alignment check"
+                          className="w-full bg-[#070a12] border border-white/10 rounded-xl px-3 py-2 text-white outline-none focus:border-accent"
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-slate-400 mb-1">Quote Amount (₹)</label>
+                        <input
+                          type="number"
+                          min="0"
+                          value={extraWorkBill}
+                          onChange={(e) => setExtraWorkBill(e.target.value)}
+                          placeholder="0"
+                          className="w-full bg-[#070a12] border border-white/10 rounded-xl px-3 py-2 text-white font-mono outline-none focus:border-accent font-bold text-right"
+                        />
+                      </div>
+                    </div>
+
+                    <div className="flex flex-col sm:flex-row items-center justify-between gap-3 pt-2">
+                      <p className="text-[11px] text-slate-400">
+                        {booking.customWorkConfirmedByCustomer || booking.quotationStatus === 'APPROVED_BY_CUSTOMER' ? (
+                          <span className="text-emerald-300 font-bold flex items-center gap-1">
+                            <CheckCircle2 size={13} /> Customer has confirmed and approved this quotation!
+                          </span>
+                        ) : (
+                          'Dispatching quote notifies customer live to review and confirm the bill.'
+                        )}
+                      </p>
+                      <button
+                        type="button"
+                        disabled={isSendingQuote || isReadOnly}
+                        onClick={handleSendCustomWorkQuote}
+                        className="w-full sm:w-auto px-5 py-2.5 rounded-xl bg-gradient-to-r from-accent to-accent-light text-slate-950 font-black text-xs flex items-center justify-center gap-2 shadow-md hover:brightness-110 active:scale-95 transition-all disabled:opacity-50"
+                      >
+                        {isSendingQuote ? 'Sending...' : 'Send Custom Work Quote to Customer'} <Send size={13} />
+                      </button>
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* 1. STAGE STATUS SELECTOR WITH VISUAL PROGRESSION */}
+            <div className="p-6 sm:p-7 rounded-3xl border border-white/10 bg-gradient-to-br from-[#0d1424]/85 via-[#0a0f1d]/90 to-[#070a12] backdrop-blur-xl shadow-xl space-y-4">
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                <div>
+                  <label className="block text-xs font-bold uppercase tracking-wider text-slate-300">
+                    Live Service Stage Progression Board
+                  </label>
+                  <p className="text-[11px] text-slate-400 mt-0.5">
+                    Click any stage to advance. All preceding stages display as completed, instantly syncing to the customer live feed.
+                  </p>
+                </div>
+                <span className="text-[11px] text-slate-400 font-mono">
+                  Current: <strong className="text-amber-400">{status}</strong>
                 </span>
               </div>
-              <div className="flex flex-wrap gap-2">
-                {STATUS_FLOW.map((s) => (
-                  <button
-                    key={s}
-                    type="button"
-                    disabled={isDeliveredLocked}
-                    onClick={() => setStatus(s)}
-                    className={`px-4 py-2.5 rounded-xl text-xs font-bold transition-all duration-200 border ${
-                      status === s 
-                        ? s === 'Delivered' 
-                          ? 'bg-emerald-500 text-white border-emerald-500 shadow-[0_0_15px_rgba(16,185,129,0.4)] scale-105' 
-                          : 'bg-gradient-to-r from-amber-400 to-amber-500 text-slate-950 font-black border-amber-300 shadow-[0_0_15px_rgba(245,158,11,0.35)] scale-105' 
-                        : 'bg-white/5 border-white/10 text-slate-400 hover:bg-white/10 hover:text-white disabled:opacity-40'
-                    }`}
-                  >
-                    {s === 'Delivered' ? '🔒 Mark Delivered & Seal' : s}
-                  </button>
-                ))}
+              
+              <div className="flex flex-wrap gap-2.5">
+                {STATUS_FLOW.map((s) => {
+                  const activeIdx = PROGRESSIVE_STAGES.indexOf(status);
+                  const sIdx = PROGRESSIVE_STAGES.indexOf(s);
+                  const isProgressive = sIdx !== -1 && activeIdx !== -1;
+                  const isCurrent = status === s;
+                  const isCompleted = isProgressive && sIdx <= activeIdx;
+
+                  return (
+                    <button
+                      key={s}
+                      type="button"
+                      disabled={isDeliveredLocked}
+                      onClick={() => handleQuickStageUpdate(s)}
+                      className={`px-3.5 py-2.5 rounded-xl text-xs font-bold transition-all duration-200 border flex items-center gap-1.5 shadow-sm active:scale-95 disabled:opacity-40 ${
+                        isCurrent
+                          ? s === 'Delivered'
+                            ? 'bg-emerald-500 text-white border-emerald-400 shadow-[0_0_20px_rgba(16,185,129,0.5)] scale-105 ring-2 ring-emerald-400/40'
+                            : 'bg-gradient-to-r from-amber-400 to-amber-500 text-slate-950 font-black border-amber-300 shadow-[0_0_20px_rgba(245,158,11,0.4)] scale-105'
+                          : isCompleted
+                            ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/40 hover:bg-emerald-500/30'
+                            : 'bg-white/5 border-white/10 text-slate-400 hover:bg-white/10 hover:text-white'
+                      }`}
+                    >
+                      {isCompleted && !isCurrent ? (
+                        <CheckCircle2 size={13} className="text-emerald-400" />
+                      ) : isCurrent ? (
+                        s === 'Delivered' ? <Lock size={13} /> : <CheckCircle2 size={13} />
+                      ) : (
+                        <Circle size={10} className="text-slate-500" />
+                      )}
+                      <span>{s === 'Delivered' ? (isCurrent ? '🔒 Delivered (Sealed)' : 'Mark Delivered & Seal') : s}</span>
+                      {isCompleted && !isCurrent && (
+                        <span className="text-[9px] uppercase tracking-wider bg-emerald-500/30 text-emerald-200 px-1.5 py-0.2 rounded font-mono">
+                          Done
+                        </span>
+                      )}
+                    </button>
+                  );
+                })}
               </div>
             </div>
 

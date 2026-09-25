@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { ChevronLeft, ChevronRight, CheckCircle2, Calendar, Clock, Car, Settings, Check, MapPin, ShieldCheck, Tag, Sparkles } from 'lucide-react';
+import { ChevronLeft, ChevronRight, CheckCircle2, Calendar, Clock, Car, Settings, Check, MapPin, ShieldCheck, Tag, Sparkles, FileText } from 'lucide-react';
 import { collection, addDoc, serverTimestamp } from 'firebase/firestore';
 import { ref, set } from 'firebase/database';
 import { db, rtdb } from '../firebase';
@@ -27,6 +27,7 @@ export default function BookService() {
     date: '',
     time: '',
     isUrgent: false,
+    customRequirements: '',
     location: {
       city: 'Mumbai',
       address: '',
@@ -92,6 +93,11 @@ export default function BookService() {
       fuelType: bookingData.fuelType,
       serviceId: bookingData.serviceId,
       serviceType: selectedService?.name || 'General Service',
+      customRequirements: bookingData.customRequirements || '',
+      quotationStatus: bookingData.customRequirements ? 'QUOTED_PENDING_APPROVAL' : 'STANDARD',
+      extraWorkBill: 0,
+      extraWorkDescription: '',
+      customWorkConfirmedByCustomer: false,
       requestedDate: bookingData.date,
       requestedTime: bookingData.time,
       preferredDate: bookingData.date,
@@ -292,6 +298,29 @@ export default function BookService() {
                   </div>
                 ))}
               </div>
+              
+              {/* Extra Right: Explain What Specific Service / Issues Needed (In Written) */}
+              <div className="mt-6 p-5 sm:p-6 rounded-2xl bg-white/5 border border-white/10 space-y-3">
+                <div className="flex items-center justify-between">
+                  <label className="text-xs font-bold uppercase tracking-wider text-white flex items-center gap-2">
+                    <FileText size={16} className="text-accent" />
+                    Explain Specific Service / Issues Needed <span className="text-accent lowercase font-normal">(In Written)</span>
+                  </label>
+                  <span className="text-[10px] uppercase font-mono px-2 py-0.5 rounded-full bg-accent/15 text-accent font-bold border border-accent/20">
+                    Custom Written Request
+                  </span>
+                </div>
+                <p className="text-xs text-gray-400 leading-relaxed">
+                  Have special requests, engine vibrations, specific sounds, or extra part replacements? Describe them below. Our garage manager will inspect these written notes, prepare an itemized quote, and send it for your confirmation before starting work.
+                </p>
+                <textarea
+                  rows={3}
+                  value={bookingData.customRequirements}
+                  onChange={(e) => setBookingData({ ...bookingData, customRequirements: e.target.value })}
+                  placeholder="e.g. Strange clicking noise from front-left suspension during turns; also check AC airflow and wiper blade wear..."
+                  className="w-full bg-black/40 border border-white/10 rounded-xl p-3.5 text-white text-xs placeholder-gray-500 outline-none focus:border-accent transition-all resize-none leading-relaxed"
+                />
+              </div>
             </div>
           )}
 
@@ -489,6 +518,21 @@ export default function BookService() {
                     <ShieldCheck size={13} /> Phone Confirmed
                   </span>
                 </div>
+
+                {/* Customer Written Special Instructions */}
+                {bookingData.customRequirements && (
+                  <div className="p-3.5 bg-accent/10 border border-accent/25 rounded-xl text-xs space-y-1">
+                    <div className="flex items-center justify-between">
+                      <span className="text-accent font-bold flex items-center gap-1.5">
+                        <FileText size={13} /> Your Written Custom Service Notes:
+                      </span>
+                      <span className="text-[10px] text-accent/80 font-mono">Manager Review & Quote</span>
+                    </div>
+                    <p className="text-gray-200 leading-relaxed italic">
+                      "{bookingData.customRequirements}"
+                    </p>
+                  </div>
+                )}
 
                 <div className="p-4 bg-accent/10 border border-accent/20 rounded-xl text-xs space-y-1 text-amber-200">
                   <div className="flex items-center gap-1.5 font-bold text-white">

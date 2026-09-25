@@ -253,6 +253,14 @@ export const STATUS_FLOW = [
 
 export const services = [
   {
+    id: 's0',
+    name: 'Minor Service',
+    description: 'Essential 25-point health inspection, vital fluids top-up, battery terminal cleaning, tire pressure adjustment, and safety check.',
+    badge: 'Express Maintenance',
+    estimatedTime: '30 - 45 Mins',
+    image: 'https://images.unsplash.com/photo-1619642751034-765dfdf7c58e?auto=format&fit=crop&w=800&q=80'
+  },
+  {
     id: 's1',
     name: 'Full Service',
     description: 'Comprehensive 40-point check, oil change, filter replacement, fluid top-up, and full exterior wash.',

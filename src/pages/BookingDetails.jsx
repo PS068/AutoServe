@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { useParams, Link } from 'react-router-dom';
-import { ChevronLeft, Car, Calendar, Clock, CheckCircle, Circle, MessageSquare, Send, FileText, Wrench, Shield, Sparkles, Tag, CheckSquare, Flame, AlertTriangle, Lock, Printer, MessageCircle, XCircle } from 'lucide-react';
-import { doc, getDoc, updateDoc, collection, getDocs, addDoc, serverTimestamp } from 'firebase/firestore';
+import { ChevronLeft, Car, Calendar, Clock, CheckCircle, Circle, MessageSquare, Send, FileText, Wrench, Shield, Sparkles, Tag, CheckSquare, Flame, AlertTriangle, Lock, Printer, MessageCircle, XCircle, CheckCircle2 } from 'lucide-react';
+import { doc, getDoc, updateDoc, collection, getDocs, addDoc, serverTimestamp, onSnapshot } from 'firebase/firestore';
 import { ref, push, set } from 'firebase/database';
 import { db, rtdb } from '../firebase';
 import { STATUS_FLOW, services } from '../data/dummyData';
@@ -21,6 +21,7 @@ export default function BookingDetails() {
   const [isLoading, setIsLoading] = useState(true);
   const [timeLeft, setTimeLeft] = useState(null);
   const [isProcessingAction, setIsProcessingAction] = useState(false);
+  const [isConfirmingBill, setIsConfirmingBill] = useState(false);
 
   // Invoice Modal State
   const [isInvoiceModalOpen, setIsInvoiceModalOpen] = useState(false);
@@ -40,7 +41,6 @@ export default function BookingDetails() {
 
       if (diff <= 0) {
         setTimeLeft('EXPIRED');
-        // Auto expire if not already marked
         if (booking.status !== 'Declined' && booking.status !== 'Failed / Expired') {
           handleExpireBooking();
         }
@@ -190,45 +190,100 @@ export default function BookingDetails() {
     }
   };
 
+  // CUSTOMER CONFIRMATION OF EXTRA WRITTEN WORK BILL
+  const handleConfirmCustomBill = async () => {
+    if (!booking) return;
+    try {
+      setIsConfirmingBill(true);
+      const bookingRef = doc(db, 'bookings', booking.bookingId);
+      const updatePayload = {
+        customWorkConfirmedByCustomer: true,
+        quotationStatus: 'APPROVED_BY_CUSTOMER',
+        customerConfirmedAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString()
+      };
+
+      await updateDoc(bookingRef, updatePayload);
+
+      try {
+        await set(ref(rtdb, `bookings/${booking.bookingId}/customWorkConfirmedByCustomer`), true);
+        await set(ref(rtdb, `bookings/${booking.bookingId}/quotationStatus`), 'APPROVED_BY_CUSTOMER');
+      } catch (rtdbErr) {}
+
+      const logData = {
+        bookingId: booking.bookingId,
+        status: booking.status || 'Servicing',
+        updatedBy: currentUser?.uid || 'customer',
+        updaterName: currentUser?.name || 'Customer',
+        note: `Customer approved & confirmed written service bill (₹${booking.extraWorkBill || 0}). Final Approved Bill: ₹${booking.finalBill || 0}.`,
+        createdAt: serverTimestamp()
+      };
+      await addDoc(collection(db, 'bookingStatusLogs'), logData);
+
+      const confirmMsg = {
+        bookingId: id,
+        senderId: currentUser?.uid || 'customer',
+        senderName: currentUser?.name || 'Customer',
+        senderRole: 'customer',
+        message: `✅ Bill Confirmed: I have reviewed and approved the ₹${booking.extraWorkBill || 0} custom work quotation (Total Approved Bill: ₹${booking.finalBill || 0}). Please proceed with the service.`,
+        createdAt: serverTimestamp()
+      };
+      await addDoc(collection(db, 'bookingChats'), confirmMsg);
+
+      setBooking(prev => ({ ...prev, ...updatePayload }));
+      setMessages(prev => [...prev, { ...confirmMsg, id: `chat-${Date.now()}`, createdAt: new Date().toISOString() }]);
+      addToast('Custom work bill confirmed! Service team notified immediately.', 'success');
+    } catch (err) {
+      console.error('Failed to confirm bill:', err);
+      addToast(`Error approving bill: ${err.message}`, 'error');
+    } finally {
+      setIsConfirmingBill(false);
+    }
+  };
+
   const [isForbidden, setIsForbidden] = useState(false);
 
+  // REALTIME ON-SNAPSHOT LISTENER FOR INSTANT CLIENT SYNC
   useEffect(() => {
-    async function loadBooking() {
+    const bookingRef = doc(db, 'bookings', id);
+    const unsub = onSnapshot(bookingRef, (bookingSnap) => {
+      if (!bookingSnap.exists()) {
+        setBooking(null);
+        setIsLoading(false);
+        return;
+      }
+      const data = { bookingId: bookingSnap.id, ...bookingSnap.data() };
+
+      const isStaff = currentUser?.role === 'admin' || currentUser?.role === 'mechanic';
+      const userPhoneDigits = (currentUser?.phone || '').replace(/\D/g, '').slice(-10);
+      const bookingPhoneDigits = (data.customerPhone || data.guestPhone || '').replace(/\D/g, '').slice(-10);
+      const userEmail = (currentUser?.email || '').toLowerCase().trim();
+      const bookingEmail = (data.customerEmail || data.guestEmail || '').toLowerCase().trim();
+
+      const isOwner = (
+        (data.customerId && currentUser?.uid && (data.customerId === currentUser.uid || data.customerId === `cust-${userPhoneDigits}`)) ||
+        (userPhoneDigits && bookingPhoneDigits && userPhoneDigits === bookingPhoneDigits) ||
+        (userEmail && bookingEmail && userEmail === bookingEmail)
+      );
+
+      if (!isStaff && !isOwner) {
+        setIsForbidden(true);
+        setBooking(null);
+        setIsLoading(false);
+        return;
+      }
+
+      setIsForbidden(false);
+      setBooking(data);
+      setIsLoading(false);
+    }, (error) => {
+      console.warn('Booking realtime listener error:', error);
+      setIsLoading(false);
+    });
+
+    // Load Chats
+    const loadChatsAndLogs = async () => {
       try {
-        const bookingRef = doc(db, 'bookings', id);
-        const bookingSnap = await getDoc(bookingRef);
-        if (!bookingSnap.exists()) {
-          setBooking(null);
-          setIsLoading(false);
-          return;
-        }
-        const data = { bookingId: bookingSnap.id, ...bookingSnap.data() };
-
-        // STRICT ACCESS CONTROL (IDOR PROTECTION):
-        // Only the vehicle owner (matching customerId, phone number, or email) OR certified garage staff can access!
-        const isStaff = currentUser?.role === 'admin' || currentUser?.role === 'mechanic';
-        const userPhoneDigits = (currentUser?.phone || '').replace(/\D/g, '').slice(-10);
-        const bookingPhoneDigits = (data.customerPhone || data.guestPhone || '').replace(/\D/g, '').slice(-10);
-        const userEmail = (currentUser?.email || '').toLowerCase().trim();
-        const bookingEmail = (data.customerEmail || data.guestEmail || '').toLowerCase().trim();
-
-        const isOwner = (
-          (data.customerId && currentUser?.uid && (data.customerId === currentUser.uid || data.customerId === `cust-${userPhoneDigits}`)) ||
-          (userPhoneDigits && bookingPhoneDigits && userPhoneDigits === bookingPhoneDigits) ||
-          (userEmail && bookingEmail && userEmail === bookingEmail)
-        );
-
-        if (!isStaff && !isOwner) {
-          setIsForbidden(true);
-          setBooking(null);
-          setIsLoading(false);
-          addToast('Access Denied: You do not have permission to access another customer’s service record.', 'error');
-          return;
-        }
-
-        setIsForbidden(false);
-        setBooking(data);
-
         const chatSnap = await getDocs(collection(db, 'bookingChats'));
         const chatItems = chatSnap.docs
           .map(doc => ({ id: doc.id, ...doc.data() }))
@@ -250,16 +305,12 @@ export default function BookingDetails() {
             return aTime - bTime;
           });
         setStatusLogs(statusItems);
-      } catch (error) {
-        console.error('Failed to load booking details:', error);
-        addToast(`Unable to load booking details: ${error.message}`, 'error');
-        setBooking(null);
-      } finally {
-        setIsLoading(false);
-      }
-    }
-    loadBooking();
-  }, [id, currentUser, addToast]);
+      } catch (e) {}
+    };
+
+    loadChatsAndLogs();
+    return () => unsub();
+  }, [id, currentUser]);
 
   const handleSendMessage = async (e) => {
     e.preventDefault();
@@ -646,6 +697,70 @@ export default function BookingDetails() {
           </div>
         )}
 
+        {/* 4. CUSTOM WRITTEN SERVICE BILL CONFIRMATION CARD (Customer action required) */}
+        {(booking.quotationStatus === 'QUOTED_PENDING_APPROVAL' || (booking.extraWorkBill > 0 && !booking.customWorkConfirmedByCustomer)) && (
+          <div className="mb-6 p-6 sm:p-7 rounded-3xl bg-gradient-to-r from-amber-500/20 via-amber-600/10 to-[#121212] border-2 border-amber-400 shadow-[0_0_35px_rgba(245,158,11,0.25)] space-y-4 backdrop-blur-xl animate-fade-in">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-white/10 pb-3">
+              <div className="flex items-center gap-3">
+                <div className="w-11 h-11 rounded-2xl bg-amber-500/20 border border-amber-400 text-amber-300 flex items-center justify-center shrink-0">
+                  <FileText size={22} className="animate-pulse" />
+                </div>
+                <div>
+                  <span className="text-[10px] uppercase font-black tracking-wider px-2.5 py-0.5 rounded-full bg-amber-400 text-slate-950 font-mono">
+                    Quotation Review
+                  </span>
+                  <h2 className="text-base sm:text-lg font-black text-white mt-1">
+                    Manager Custom Work Bill Confirmation Required
+                  </h2>
+                </div>
+              </div>
+              <div className="text-left sm:text-right">
+                <span className="text-[11px] text-gray-400 block uppercase font-semibold">Total Itemized Bill</span>
+                <span className="text-xl font-extrabold text-amber-300 font-mono">₹{parseFloat(booking.finalBill || 0).toFixed(2)}</span>
+              </div>
+            </div>
+
+            <p className="text-xs text-amber-100/90 leading-relaxed">
+              Our certified garage manager inspected your vehicle and written requests. Please confirm the custom work quotation below to authorize our technicians to start servicing.
+            </p>
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-xs">
+              <div className="p-3.5 rounded-2xl bg-black/50 border border-white/10 space-y-1">
+                <span className="text-gray-400 text-[10px] font-bold uppercase tracking-wider block">Your Written Request:</span>
+                <p className="text-white italic">"{booking.customRequirements}"</p>
+              </div>
+
+              <div className="p-3.5 rounded-2xl bg-amber-500/10 border border-amber-500/25 space-y-1">
+                <span className="text-amber-300 text-[10px] font-bold uppercase tracking-wider block">Manager Quote Scope & Amount:</span>
+                <p className="text-white font-semibold">{booking.extraWorkDescription || 'Extra Diagnostic & Component Fitment'}</p>
+                <p className="text-amber-300 font-bold font-mono text-sm mt-1">Extra Work: +₹{parseFloat(booking.extraWorkBill || 0).toFixed(2)}</p>
+              </div>
+            </div>
+
+            <div className="flex flex-col sm:flex-row items-center gap-3 pt-2">
+              <button
+                type="button"
+                disabled={isConfirmingBill}
+                onClick={handleConfirmCustomBill}
+                className="w-full sm:flex-1 py-3 px-6 rounded-2xl bg-gradient-to-r from-emerald-400 to-teal-400 hover:brightness-110 text-slate-950 font-black text-xs flex items-center justify-center gap-2 shadow-lg shadow-emerald-500/25 active:scale-95 transition-all disabled:opacity-50"
+              >
+                {isConfirmingBill ? 'Confirming...' : '✅ Confirm & Approve Bill (Proceed With Service)'}
+              </button>
+
+              <a
+                href="#direct-chat"
+                onClick={(e) => {
+                  e.preventDefault();
+                  document.querySelector('input[placeholder="Message the service team..."]')?.focus();
+                }}
+                className="w-full sm:w-auto py-3 px-5 rounded-2xl bg-white/10 hover:bg-white/15 border border-white/10 text-white font-bold text-xs flex items-center justify-center gap-1.5 transition-all text-center"
+              >
+                <MessageSquare size={14} className="text-accent" /> Discuss in Chat
+              </a>
+            </div>
+          </div>
+        )}
+
         {/* Creative Deadline Banner */}
         <div className="mb-6">
           {renderCreativeDeadline()}
@@ -657,10 +772,24 @@ export default function BookingDetails() {
           <div className="lg:col-span-2 space-y-6">
 
             {/* Vehicle & Service Info */}
-            <div className="glass-card rounded-2xl p-6 border border-white/10">
-              <h2 className="text-sm font-bold uppercase tracking-wider text-gray-300 mb-4 flex items-center gap-2">
-                <Car size={18} className="text-accent" /> Booking Summary
-              </h2>
+            <div className="glass-card rounded-2xl p-6 border border-white/10 space-y-4">
+              <div className="flex items-center justify-between border-b border-white/10 pb-3">
+                <h2 className="text-sm font-bold uppercase tracking-wider text-gray-300 flex items-center gap-2">
+                  <Car size={18} className="text-accent" /> Booking Summary
+                </h2>
+                {booking.customRequirements && (
+                  <span className={`text-[10px] font-bold px-2.5 py-0.5 rounded-full border ${
+                    booking.customWorkConfirmedByCustomer || booking.quotationStatus === 'APPROVED_BY_CUSTOMER'
+                      ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/40'
+                      : 'bg-amber-500/20 text-amber-300 border-amber-500/40'
+                  }`}>
+                    {booking.customWorkConfirmedByCustomer || booking.quotationStatus === 'APPROVED_BY_CUSTOMER'
+                      ? '✅ Custom Work Approved'
+                      : '⏳ Custom Quote Pending Approval'}
+                  </span>
+                )}
+              </div>
+
               <div className="grid grid-cols-2 gap-4 text-sm">
                 <div>
                   <p className="text-xs text-gray-500">Vehicle</p>
@@ -687,6 +816,25 @@ export default function BookingDetails() {
                   <p className="text-white flex items-center gap-1.5"><Clock size={13} className="text-gray-400" /> {booking.preferredTime}</p>
                 </div>
               </div>
+
+              {/* Customer Written Requirements details */}
+              {booking.customRequirements && (
+                <div className="pt-3 border-t border-white/5">
+                  <div className="p-3 rounded-xl bg-black/40 border border-white/5 text-xs space-y-1">
+                    <span className="text-accent font-semibold flex items-center gap-1.5">
+                      <FileText size={13} /> Your Written Specific Service Request:
+                    </span>
+                    <p className="text-gray-300 leading-relaxed italic">
+                      "{booking.customRequirements}"
+                    </p>
+                    {booking.customWorkConfirmedByCustomer && (
+                      <p className="text-[11px] text-emerald-400 font-medium pt-1 flex items-center gap-1">
+                        <CheckCircle2 size={12} /> You confirmed and approved this custom service bill.
+                      </p>
+                    )}
+                  </div>
+                </div>
+              )}
             </div>
 
             {/* AGILE SUBTASKS PROGRESS (Checklist for Customer) */}
