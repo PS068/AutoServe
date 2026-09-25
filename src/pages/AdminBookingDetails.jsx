@@ -389,6 +389,23 @@ export default function AdminBookingDetails() {
       return;
     }
 
+    const isPaid = booking.isPaid || booking.paymentStatus === 'PAID';
+
+    // REQUIREMENT: Before paying bill, Ready to Deliver & Delivered options CANNOT be clicked/advanced!
+    if ((newStatus === 'Ready' || newStatus === 'Delivered') && !isPaid) {
+      if (newStatus === 'Ready') {
+        addToast('💳 Bill Payment Required: Please confirm bill payment receipt before marking vehicle Ready for Delivery.', 'error', 4500);
+      } else {
+        addToast('⛔ Cannot Deliver Vehicle: Bill is not paid. Please confirm customer payment before final delivery & vehicle handover.', 'error', 4500);
+      }
+      // Smooth scroll to payment confirmation section
+      const paySection = document.getElementById('revenue-payment-section');
+      if (paySection) {
+        paySection.scrollIntoView({ behavior: 'smooth' });
+      }
+      return;
+    }
+
     const isMarkingDelivered = newStatus === 'Delivered';
 
     try {
@@ -429,7 +446,7 @@ export default function AdminBookingDetails() {
         senderId: currentUser?.uid || 'admin-1',
         senderName: currentUser?.name || 'Garage Manager',
         senderRole: 'admin',
-        message: `🔄 Stage Update: Vehicle is now in "${newStatus}" stage.${newStatus === 'Ready' ? ' Your vehicle is fully serviced and ready for pickup / delivery!' : ''}`,
+        message: `🔄 Stage Update: Vehicle is now in "${newStatus}" stage.${newStatus === 'Ready' ? ' Your vehicle is fully serviced and ready for pickup / delivery!' : newStatus === 'Delivered' ? ' Vehicle has been successfully handed over & delivered! 🎉' : ''}`,
         createdAt: serverTimestamp()
       };
       await addDoc(collection(db, 'bookingChats'), stageChat);
@@ -437,11 +454,14 @@ export default function AdminBookingDetails() {
       setStatus(newStatus);
       setBooking(prev => ({ ...prev, ...updatePayload }));
       setChats(prev => [...prev, { ...stageChat, id: `chat-${Date.now()}`, createdAt: new Date().toISOString() }]);
-      addToast(`Stage updated to "${newStatus}"! Live client feed updated immediately.`, 'success');
-
+      
       if (isMarkingDelivered) {
-        setInvoiceModalTab('dispatch');
-        setIsInvoiceModalOpen(true);
+        addToast('Vehicle successfully delivered & sealed! Redirecting to Active Works...', 'success', 3000);
+        setTimeout(() => {
+          navigate('/admin');
+        }, 1200);
+      } else {
+        addToast(`Stage updated to "${newStatus}"! Live client feed updated immediately.`, 'success');
       }
     } catch (error) {
       console.error('Failed to update stage:', error);
@@ -734,6 +754,23 @@ export default function AdminBookingDetails() {
       return;
     }
 
+    const isPaid = booking.isPaid || booking.paymentStatus === 'PAID';
+    if ((status === 'Ready' || status === 'Delivered') && !isPaid) {
+      addToast(
+        status === 'Ready' 
+          ? '💳 Bill Payment Required: Please confirm bill payment before marking Ready.' 
+          : '⛔ Cannot Deliver Vehicle: Bill is not paid. Please confirm payment before delivery.',
+        'error', 
+        4500
+      );
+      setSaveStatus('');
+      const paySection = document.getElementById('revenue-payment-section');
+      if (paySection) {
+        paySection.scrollIntoView({ behavior: 'smooth' });
+      }
+      return;
+    }
+
     setSaveStatus('saving');
 
     try {
@@ -793,13 +830,15 @@ export default function AdminBookingDetails() {
 
       setBooking(prev => ({ ...prev, ...updatePayload }));
       setSaveStatus('saved');
-      addToast(isMarkingDelivered ? 'Order marked Delivered and permanently sealed!' : 'Work timing, agile tasks & quote saved!', 'success');
-      setTimeout(() => setSaveStatus(''), 2500);
-
-      // Auto-open WhatsApp & SMS Dispatch Modal on Delivery
+      
       if (isMarkingDelivered) {
-        setInvoiceModalTab('dispatch');
-        setIsInvoiceModalOpen(true);
+        addToast('Order marked Delivered and permanently sealed! Redirecting to Active Works...', 'success', 3000);
+        setTimeout(() => {
+          navigate('/admin');
+        }, 1200);
+      } else {
+        addToast('Work timing, agile tasks & quote saved!', 'success');
+        setTimeout(() => setSaveStatus(''), 2500);
       }
     } catch (error) {
       console.error('Failed to save booking changes:', error);
@@ -888,7 +927,13 @@ export default function AdminBookingDetails() {
                 <strong className="text-white">Record Locked:</strong> {isDeliveredLocked ? 'This vehicle has been delivered to customer and invoiced.' : 'This request has been declined/closed.'} Editing is disabled.
               </span>
             </div>
-            <div className="flex items-center gap-2">
+            <div className="flex items-center gap-2 flex-wrap">
+              <button
+                onClick={() => navigate('/admin')}
+                className="px-3.5 py-2 rounded-xl bg-sky-500/20 hover:bg-sky-500/30 text-sky-300 font-bold text-xs flex items-center gap-1.5 transition-all border border-sky-500/30 shadow-sm"
+              >
+                ← Back to Active Works
+              </button>
               <button
                 onClick={() => {
                   setInvoiceModalTab('print');
@@ -1287,6 +1332,8 @@ export default function AdminBookingDetails() {
                   const isProgressive = sIdx !== -1 && activeIdx !== -1;
                   const isCurrent = status === s;
                   const isCompleted = isProgressive && sIdx <= activeIdx;
+                  const isBookingPaid = booking?.isPaid || booking?.paymentStatus === 'PAID';
+                  const isPaymentLocked = (s === 'Ready' || s === 'Delivered') && !isBookingPaid;
 
                   return (
                     <button
@@ -1294,6 +1341,7 @@ export default function AdminBookingDetails() {
                       type="button"
                       disabled={isDeliveredLocked}
                       onClick={() => handleQuickStageUpdate(s)}
+                      title={isPaymentLocked ? 'Payment verification required before advancing to this stage' : ''}
                       className={`px-3.5 py-2.5 rounded-xl text-xs font-bold transition-all duration-200 border flex items-center gap-1.5 shadow-sm active:scale-95 disabled:opacity-40 ${
                         isCurrent
                           ? s === 'Delivered'
@@ -1301,6 +1349,8 @@ export default function AdminBookingDetails() {
                             : 'bg-gradient-to-r from-amber-400 to-amber-500 text-slate-950 font-black border-amber-300 shadow-[0_0_20px_rgba(245,158,11,0.4)] scale-105'
                           : isCompleted
                             ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/40 hover:bg-emerald-500/30'
+                            : isPaymentLocked
+                            ? 'bg-rose-950/20 border-rose-500/30 text-rose-300 hover:bg-rose-500/10'
                             : 'bg-white/5 border-white/10 text-slate-400 hover:bg-white/10 hover:text-white'
                       }`}
                     >
@@ -1308,6 +1358,8 @@ export default function AdminBookingDetails() {
                         <CheckCircle2 size={13} className="text-emerald-400" />
                       ) : isCurrent ? (
                         s === 'Delivered' ? <Lock size={13} /> : <CheckCircle2 size={13} />
+                      ) : isPaymentLocked ? (
+                        <Lock size={11} className="text-rose-400" />
                       ) : (
                         <Circle size={10} className="text-slate-500" />
                       )}
@@ -1315,6 +1367,11 @@ export default function AdminBookingDetails() {
                       {isCompleted && !isCurrent && (
                         <span className="text-[9px] uppercase tracking-wider bg-emerald-500/30 text-emerald-200 px-1.5 py-0.2 rounded font-mono">
                           Done
+                        </span>
+                      )}
+                      {isPaymentLocked && !isCompleted && !isCurrent && (
+                        <span className="text-[9px] uppercase font-bold tracking-wider bg-rose-500/20 text-rose-300 px-1.5 py-0.5 rounded border border-rose-500/30 font-mono">
+                          {s === 'Ready' ? 'Pay to Ready' : 'Unpaid'}
                         </span>
                       )}
                     </button>
@@ -1693,7 +1750,7 @@ export default function AdminBookingDetails() {
                 </div>
 
                 {/* MANAGER REVENUE & BILL PAYMENT CONFIRMATION ENGINE */}
-                <div className="pt-3 border-t border-amber-500/30 space-y-3">
+                <div id="revenue-payment-section" className="pt-3 border-t border-amber-500/30 space-y-3">
                   <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
                     <div>
                       <span className="text-xs font-black text-amber-300 uppercase tracking-wide flex items-center gap-1.5">
