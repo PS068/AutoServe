@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import { useParams, Link, useNavigate } from 'react-router-dom';
-import { ChevronLeft, MessageSquare, Save, User, Car, Settings, CheckCircle2, Circle, AlertCircle, AlertTriangle, Zap, Send, ShieldCheck, ShieldAlert, Tag, Plus, Trash2, Calculator, Clock, Calendar, CheckSquare, Layers, Lock, Flame, Printer, MessageCircle, Phone, FileText } from 'lucide-react';
+import { ChevronLeft, MessageSquare, Save, User, Car, Settings, CheckCircle2, Circle, AlertCircle, AlertTriangle, Zap, Send, ShieldCheck, ShieldAlert, Tag, Plus, Trash2, Calculator, Clock, Calendar, CheckSquare, Layers, Lock, Flame, Printer, MessageCircle, Phone, FileText, DollarSign } from 'lucide-react';
 import { doc, getDoc, updateDoc, collection, getDocs, addDoc, serverTimestamp } from 'firebase/firestore';
 import { ref, push, set } from 'firebase/database';
 import { db, rtdb } from '../firebase';

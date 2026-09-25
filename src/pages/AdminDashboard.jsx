@@ -745,11 +745,31 @@ export default function AdminDashboard() {
                       </div>
 
                       {/* Stage & Service Scope */}
-                      <div className="flex items-center justify-between gap-2 mb-3.5 pt-2 border-t border-white/5 text-xs">
+                      <div className="flex items-center justify-between gap-2 mb-2 pt-2 border-t border-white/5 text-xs">
                         <span className={`text-[11px] px-3 py-0.5 rounded-full border font-extrabold ${getStatusColor(b.status)}`}>
                           ● {b.status}
                         </span>
                         <span className="text-slate-300 font-medium truncate max-w-[150px]">{b.serviceType}</span>
+                      </div>
+
+                      {/* Small Bill Payment Status Highlight */}
+                      <div className="flex items-center justify-between gap-2 mb-3 px-3 py-1.5 rounded-xl bg-black/40 border border-white/5 text-[11px]">
+                        <span className="text-slate-400 font-medium flex items-center gap-1">
+                          <DollarSign size={12} className="text-emerald-400" /> Bill:
+                        </span>
+                        {(b.isPaid || b.paymentStatus === 'PAID') ? (
+                          <span className="font-bold text-emerald-300 bg-emerald-500/15 border border-emerald-500/30 px-2 py-0.5 rounded-md flex items-center gap-1 shadow-sm">
+                            <CheckCircle2 size={11} className="text-emerald-400" /> Paid • ₹{Number(b.finalBill || b.billing?.total || 0).toFixed(0)}
+                          </span>
+                        ) : Number(b.finalBill || b.billing?.total || 0) > 0 ? (
+                          <span className="font-bold text-amber-300 bg-amber-500/15 border border-amber-500/30 px-2 py-0.5 rounded-md flex items-center gap-1">
+                            ⏳ Unpaid • ₹{Number(b.finalBill || b.billing?.total || 0).toFixed(0)}
+                          </span>
+                        ) : (
+                          <span className="text-slate-400 font-mono text-[10px] bg-white/5 px-2 py-0.5 rounded-md">
+                            Pending Quote
+                          </span>
+                        )}
                       </div>
 
                       {/* Agile Tasks Progress Bar */}

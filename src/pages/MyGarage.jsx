@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
-import { CalendarDays, Car, History, Clock, ChevronRight, ChevronLeft, Activity, Wrench, CheckCircle, ShieldCheck, LogOut, PlusCircle, Lock, Flame, Home } from 'lucide-react';
+import { CalendarDays, Car, History, Clock, ChevronRight, ChevronLeft, Activity, Wrench, CheckCircle, ShieldCheck, LogOut, PlusCircle, Lock, Flame, Home, CheckCircle2, DollarSign } from 'lucide-react';
 import { STATUS_FLOW } from '../data/dummyData';
 import { collection, query, where, getDocs } from 'firebase/firestore';
 import { db } from '../firebase';
@@ -118,6 +118,15 @@ export default function MyGarage() {
                       ⚡ ETA Set
                     </span>
                   )}
+                  {(b.isPaid || b.paymentStatus === 'PAID') ? (
+                    <span className="text-[10px] px-2.5 py-0.5 rounded-full bg-emerald-500/20 border border-emerald-400 text-emerald-300 font-bold flex items-center gap-1 shadow-sm">
+                      <CheckCircle2 size={11} className="text-emerald-400" /> Bill Paid (₹{Number(b.finalBill || b.billing?.total || 0).toFixed(0)})
+                    </span>
+                  ) : Number(b.finalBill || b.billing?.total || 0) > 0 ? (
+                    <span className="text-[10px] px-2.5 py-0.5 rounded-full bg-amber-500/20 border border-amber-400/60 text-amber-300 font-bold flex items-center gap-1">
+                      <DollarSign size={11} className="text-amber-400" /> Bill Due (₹{Number(b.finalBill || b.billing?.total || 0).toFixed(0)})
+                    </span>
+                  ) : null}
                 </div>
                 <p className="text-xs text-gray-400">
                   {b.serviceType} • <span className="uppercase font-mono text-gray-300 font-semibold">{b.plateNumber || 'N/A'}</span>
