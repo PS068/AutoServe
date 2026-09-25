@@ -114,14 +114,18 @@ export default function IntelligencePanel({ onClose, bookings = [] }) {
 
   const bi = useMemo(() => {
     const all = bookings || [];
+    const getBookingRev = (b) => Number(b.finalBill) || Number(b.billing?.total) || 0;
+    const isBookingPaid = (b) => b.isPaid || b.paymentStatus === 'PAID' || b.status === "Delivered" || b.isDelivered;
+
     const del = all.filter(b => b.status === "Delivered" || b.isDelivered);
+    const paid = all.filter(isBookingPaid);
     const act = all.filter(b => !b.isDelivered && b.status !== "Delivered" && b.status !== "Declined" && b.status !== "Failed / Expired" && !b.isDeclined);
     const fail = all.filter(b => b.status === "Declined" || b.isDeclined || b.status === "Failed / Expired");
     const urg = all.filter(b => b.isUrgent || Number(b.urgentSurcharge) > 0);
-    const totalRev = del.reduce((s, b) => s + (Number(b.billing?.total) || 0), 0);
-    const pendRev = act.reduce((s, b) => s + (Number(b.billing?.total) || 0), 0);
+    const totalRev = paid.reduce((s, b) => s + getBookingRev(b), 0);
+    const pendRev = act.filter(b => !isBookingPaid(b)).reduce((s, b) => s + getBookingRev(b), 0);
     const urgRev = urg.reduce((s, b) => s + (Number(b.urgentSurcharge) || 0), 0);
-    const avgOV = del.length > 0 ? Math.round(totalRev / del.length) : 0;
+    const avgOV = paid.length > 0 ? Math.round(totalRev / paid.length) : (del.length > 0 ? Math.round(totalRev / del.length) : 0);
     const convRate = all.length > 0 ? Math.round((del.length / all.length) * 100) : 0;
     const urgRate = all.length > 0 ? Math.round((urg.length / all.length) * 100) : 0;
     const monthly = [];
@@ -129,7 +133,11 @@ export default function IntelligencePanel({ onClose, bookings = [] }) {
       const d = new Date(); d.setMonth(d.getMonth() - i);
       const mo = d.getMonth(), yr = d.getFullYear();
       const mb = all.filter(b => { if (!b.createdAt) return false; const bd = new Date(b.createdAt); return bd.getMonth() === mo && bd.getFullYear() === yr; });
-      monthly.push({ month: d.toLocaleString("en-IN", { month: "short" }), Bookings: mb.length, Revenue: mb.filter(b => b.status === "Delivered" || b.isDelivered).reduce((s, b) => s + (Number(b.billing?.total) || 0), 0) });
+      monthly.push({ 
+        month: d.toLocaleString("en-IN", { month: "short" }), 
+        Bookings: mb.length, 
+        Revenue: mb.filter(isBookingPaid).reduce((s, b) => s + getBookingRev(b), 0) 
+      });
     }
     const svcMap = {};
     all.forEach(b => { const s = b.serviceType || "Other"; svcMap[s] = (svcMap[s] || 0) + 1; });
@@ -142,7 +150,7 @@ export default function IntelligencePanel({ onClose, bookings = [] }) {
       const key = `${b.customerName || "Unknown"}__${b.customerPhone || ""}`;
       if (!custMap[key]) custMap[key] = { name: b.customerName || "Unknown", count: 0, revenue: 0 };
       custMap[key].count++;
-      if (b.status === "Delivered" || b.isDelivered) custMap[key].revenue += Number(b.billing?.total) || 0;
+      if (isBookingPaid(b)) custMap[key].revenue += getBookingRev(b);
     });
     const topCust = Object.values(custMap).sort((a, b) => b.revenue - a.revenue).slice(0, 5);
     const radar = [
@@ -210,7 +218,7 @@ export default function IntelligencePanel({ onClose, bookings = [] }) {
         {activeTab === "bi" && (
           <div className="space-y-4">
             <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3">
-              <StatCard icon={DollarSign} label="Total Revenue"  value={`Rs.${INR(bi.totalRev)}`} color="emerald" sub="From delivered orders" />
+              <StatCard icon={DollarSign} label="Total Revenue"  value={`Rs.${INR(bi.totalRev)}`} color="emerald" sub="Verified paid & delivered" />
               <StatCard icon={Clock}      label="Pending Revenue" value={`Rs.${INR(bi.pendRev)}`}  color="amber"   sub="Active pipeline"       />
               <StatCard icon={Target}     label="Avg. Order"      value={`Rs.${INR(bi.avgOV)}`}    color="sky"     sub="Per delivered job"     />
               <StatCard icon={CheckCircle2} label="Conversion"   value={`${bi.convRate}%`}          color="violet"  sub="Bookings to delivered" />

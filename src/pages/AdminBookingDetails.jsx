@@ -94,6 +94,10 @@ export default function AdminBookingDetails() {
   const [extraWorkDescription, setExtraWorkDescription] = useState('');
   const [isSendingQuote, setIsSendingQuote] = useState(false);
 
+  // Revenue & Bill Payment Confirmation State
+  const [paymentMode, setPaymentMode] = useState('UPI / QR Scan');
+  const [isProcessingPayment, setIsProcessingPayment] = useState(false);
+
   // Progressive flow stages for sequential completion highlight
   const PROGRESSIVE_STAGES = ['Pending Approval', 'Booked', 'Received', 'Inspecting', 'Servicing', 'Washing', 'Ready', 'Delivered'];
 
@@ -127,6 +131,7 @@ export default function AdminBookingDetails() {
         setUrgentSurcharge(data.urgentSurcharge || (data.isUrgent ? 500 : 0));
         setExtraWorkBill(data.extraWorkBill || 0);
         setExtraWorkDescription(data.extraWorkDescription || data.customRequirements || '');
+        setPaymentMode(data.paymentMode || 'UPI / QR Scan');
         
         if (data.lineItems && Array.isArray(data.lineItems) && data.lineItems.length > 0) {
           setLineItems(data.lineItems);
@@ -504,6 +509,105 @@ export default function AdminBookingDetails() {
       addToast(`Error sending quote: ${error.message}`, 'error');
     } finally {
       setIsSendingQuote(false);
+    }
+  };
+
+  const handleConfirmBillPaid = async () => {
+    if (!booking) return;
+    if (!verifyStaffAuthorization()) return;
+
+    try {
+      setIsProcessingPayment(true);
+      const paidAmount = calculatedTotal > 0 ? calculatedTotal : (booking.finalBill || 0);
+      const bookingRef = doc(db, 'bookings', booking.bookingId);
+      const nowStr = new Date().toISOString();
+
+      const updatePayload = {
+        isPaid: true,
+        paymentStatus: 'PAID',
+        paymentMode: paymentMode,
+        paymentConfirmedByManager: true,
+        paymentConfirmedAt: nowStr,
+        paymentConfirmedByName: currentUser?.name || 'Garage Manager',
+        paymentConfirmedByUid: currentUser?.uid || 'admin-1',
+        finalBill: paidAmount,
+        status: 'Ready', // When bill is paid, car is ready to deliver!
+        billing: {
+          total: paidAmount,
+          isPaid: true,
+          paidAt: nowStr,
+          mode: paymentMode,
+          subtotal: totalSubtotal,
+          discount: totalDiscount
+        },
+        updatedAt: nowStr,
+        lastModifiedBy: currentUser?.email || currentUser?.uid,
+        lastModifiedRole: currentUser?.role || 'admin'
+      };
+
+      await updateDoc(bookingRef, updatePayload);
+
+      try {
+        await set(ref(rtdb, `bookings/${booking.bookingId}/isPaid`), true);
+        await set(ref(rtdb, `bookings/${booking.bookingId}/paymentStatus`), 'PAID');
+        await set(ref(rtdb, `bookings/${booking.bookingId}/status`), 'Ready');
+        await set(ref(rtdb, `bookings/${booking.bookingId}/finalBill`), paidAmount);
+        await set(ref(rtdb, `bookings/${booking.bookingId}/billing`), updatePayload.billing);
+      } catch (rtdbErr) {}
+
+      const logData = {
+        bookingId: booking.bookingId,
+        status: 'Ready',
+        updatedBy: currentUser?.uid || 'admin-1',
+        updaterName: currentUser?.name || 'Garage Manager',
+        note: `💳 Bill payment of ₹${paidAmount.toFixed(2)} received & verified via ${paymentMode}. Revenue logged to database. Vehicle is now READY for delivery!`,
+        createdAt: serverTimestamp()
+      };
+      await addDoc(collection(db, 'bookingStatusLogs'), logData);
+
+      const paymentChat = {
+        bookingId: id,
+        senderId: currentUser?.uid || 'admin-1',
+        senderName: currentUser?.name || 'Garage Manager',
+        senderRole: 'admin',
+        message: `💳 Bill Payment Confirmed: Receipt of ₹${paidAmount.toFixed(2)} verified via ${paymentMode}. Your vehicle is now 100% READY FOR DELIVERY! 🚗🎉`,
+        createdAt: serverTimestamp()
+      };
+      await addDoc(collection(db, 'bookingChats'), paymentChat);
+
+      setStatus('Ready');
+      setBooking(prev => ({ ...prev, ...updatePayload }));
+      setChats(prev => [...prev, { ...paymentChat, id: `chat-${Date.now()}`, createdAt: new Date().toISOString() }]);
+      addToast(`Payment of ₹${paidAmount.toFixed(2)} confirmed! Vehicle marked Ready to Deliver and revenue logged.`, 'success');
+    } catch (error) {
+      console.error('Failed to confirm bill payment:', error);
+      addToast(`Error confirming payment: ${error.message}`, 'error');
+    } finally {
+      setIsProcessingPayment(false);
+    }
+  };
+
+  const handleRevokePayment = async () => {
+    if (!booking) return;
+    if (!verifyStaffAuthorization()) return;
+
+    try {
+      setIsProcessingPayment(true);
+      const bookingRef = doc(db, 'bookings', booking.bookingId);
+      const updatePayload = {
+        isPaid: false,
+        paymentStatus: 'UNPAID',
+        paymentConfirmedByManager: false,
+        paymentConfirmedAt: null,
+        updatedAt: new Date().toISOString()
+      };
+      await updateDoc(bookingRef, updatePayload);
+      setBooking(prev => ({ ...prev, ...updatePayload }));
+      addToast('Payment status reverted to Unpaid.', 'info');
+    } catch (e) {
+      addToast(`Error: ${e.message}`, 'error');
+    } finally {
+      setIsProcessingPayment(false);
     }
   };
 
@@ -1575,6 +1679,77 @@ export default function AdminBookingDetails() {
                 <div className="flex justify-between pt-2 border-t border-white/10 text-sm font-bold">
                   <span className="text-white">Final Customer Payable:</span>
                   <span className="text-amber-400 font-black font-mono text-base">₹{calculatedTotal.toFixed(2)}</span>
+                </div>
+
+                {/* MANAGER REVENUE & BILL PAYMENT CONFIRMATION ENGINE */}
+                <div className="pt-3 border-t border-amber-500/30 space-y-3">
+                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                    <div>
+                      <span className="text-xs font-black text-amber-300 uppercase tracking-wide flex items-center gap-1.5">
+                        <DollarSign size={15} className="text-emerald-400" /> Revenue & Bill Payment Verification
+                      </span>
+                      <p className="text-[11px] text-slate-400">
+                        Manager confirmation verifies payment receipt, adds to garage revenue, and marks vehicle Ready to Deliver.
+                      </p>
+                    </div>
+                    <span className={`text-[10px] font-bold px-2.5 py-0.5 rounded-full border ${
+                      booking.isPaid || booking.paymentStatus === 'PAID'
+                        ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/40'
+                        : 'bg-rose-500/20 text-rose-300 border-rose-500/30'
+                    }`}>
+                      {booking.isPaid || booking.paymentStatus === 'PAID' ? '✅ Paid & Verified' : '❌ Payment Pending'}
+                    </span>
+                  </div>
+
+                  {/* Payment Mode Selection & Action */}
+                  {!(booking.isPaid || booking.paymentStatus === 'PAID') ? (
+                    <div className="p-3 bg-[#070a12] rounded-2xl border border-white/10 space-y-2.5">
+                      <div className="flex flex-col sm:flex-row sm:items-center gap-2">
+                        <label className="text-[11px] text-slate-400 font-semibold shrink-0">Payment Mode:</label>
+                        <select
+                          disabled={isReadOnly}
+                          value={paymentMode}
+                          onChange={(e) => setPaymentMode(e.target.value)}
+                          className="flex-1 bg-black/60 border border-white/10 rounded-xl px-3 py-1.5 text-xs text-white outline-none focus:border-amber-400"
+                        >
+                          <option value="UPI / QR Scan">UPI / QR Scan (GPay, PhonePe, Paytm)</option>
+                          <option value="Cash at Cashier Desk">Cash at Cashier Desk</option>
+                          <option value="Card / POS Terminal">Credit/Debit Card (POS Terminal)</option>
+                          <option value="Net Banking / Transfer">Net Banking / NEFT / IMPS</option>
+                        </select>
+                      </div>
+
+                      <button
+                        type="button"
+                        disabled={isProcessingPayment || isReadOnly}
+                        onClick={handleConfirmBillPaid}
+                        className="w-full py-2.5 px-4 rounded-xl bg-gradient-to-r from-emerald-500 via-teal-500 to-emerald-600 hover:brightness-110 text-slate-950 font-black text-xs flex items-center justify-center gap-2 shadow-lg shadow-emerald-500/25 active:scale-95 transition-all disabled:opacity-50"
+                      >
+                        {isProcessingPayment ? 'Recording...' : `💳 Confirm Bill Paid (₹${calculatedTotal.toFixed(2)}) & Mark Ready for Delivery`}
+                      </button>
+                    </div>
+                  ) : (
+                    <div className="p-3.5 bg-emerald-500/10 border border-emerald-500/30 rounded-2xl flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs">
+                      <div>
+                        <p className="text-emerald-300 font-bold flex items-center gap-1.5">
+                          <CheckCircle2 size={14} className="text-emerald-400" /> Payment of ₹{parseFloat(booking.finalBill || calculatedTotal).toFixed(2)} Confirmed & Revenue Logged
+                        </p>
+                        <p className="text-[11px] text-slate-400 mt-0.5">
+                          Verified via <strong className="text-white">{booking.paymentMode || paymentMode}</strong> by {booking.paymentConfirmedByName || 'Manager'} • {booking.paymentConfirmedAt ? new Date(booking.paymentConfirmedAt).toLocaleString() : 'Live'}
+                        </p>
+                      </div>
+                      {!isDeliveredLocked && (
+                        <button
+                          type="button"
+                          disabled={isProcessingPayment}
+                          onClick={handleRevokePayment}
+                          className="px-3 py-1.5 rounded-lg bg-white/10 hover:bg-rose-500/20 text-slate-400 hover:text-rose-300 text-[11px] font-semibold transition-all border border-white/5"
+                        >
+                          Revert
+                        </button>
+                      )}
+                    </div>
+                  )}
                 </div>
 
                 {/* Print Invoice & WhatsApp Action Buttons in Quote Card */}

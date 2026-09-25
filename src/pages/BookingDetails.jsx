@@ -549,6 +549,45 @@ export default function BookingDetails() {
         </div>
 
 
+        {/* PAYMENT VERIFIED & VEHICLE READY FOR DELIVERY BANNER */}
+        {(booking.isPaid || booking.paymentStatus === 'PAID') && (
+          <div className="mb-6 p-6 sm:p-7 rounded-3xl bg-gradient-to-r from-emerald-500/20 via-teal-600/15 to-[#0b141a] border-2 border-emerald-400 shadow-[0_0_35px_rgba(16,185,129,0.3)] flex flex-col md:flex-row items-start md:items-center justify-between gap-5 animate-fade-in backdrop-blur-xl">
+            <div className="flex items-start gap-4">
+              <div className="w-14 h-14 rounded-2xl bg-emerald-500/20 border-2 border-emerald-400 text-emerald-300 flex items-center justify-center shrink-0 shadow-lg shadow-emerald-500/25">
+                <CheckCircle2 size={32} className="animate-bounce" />
+              </div>
+              <div>
+                <div className="flex items-center gap-2 mb-1 flex-wrap">
+                  <span className="text-[11px] uppercase font-black tracking-wider px-3 py-0.5 rounded-full bg-emerald-500 text-slate-950 font-bold shadow">
+                    Payment Verified
+                  </span>
+                  <span className="text-xs text-emerald-300 font-mono font-bold bg-emerald-500/20 px-2.5 py-0.5 rounded-full border border-emerald-500/30">
+                    Revenue Confirmed • {booking.paymentMode || 'Official Receipt'}
+                  </span>
+                </div>
+                <h2 className="text-lg sm:text-xl font-black text-white">
+                  Bill Paid (₹{parseFloat(booking.finalBill || booking.billing?.total || 0).toFixed(2)}) — Vehicle is Ready for Delivery! 🚗✨
+                </h2>
+                <p className="text-xs text-emerald-200/90 mt-1 leading-relaxed">
+                  Your payment has been received and verified by our workshop manager ({booking.paymentConfirmedByName || 'Garage Administrator'}). All service stages are complete and your vehicle is 100% ready for handover.
+                </p>
+              </div>
+            </div>
+            
+            <div className="flex items-center gap-2.5 w-full md:w-auto">
+              <button
+                onClick={() => {
+                  setInvoiceModalTab('print');
+                  setIsInvoiceModalOpen(true);
+                }}
+                className="flex-1 md:flex-none px-4 py-2.5 rounded-xl bg-white/10 hover:bg-white/20 text-white font-bold text-xs flex items-center justify-center gap-1.5 transition-all border border-white/10 shadow-sm active:scale-95"
+              >
+                <Printer size={14} className="text-accent" /> Print Paid Receipt
+              </button>
+            </div>
+          </div>
+        )}
+
         {/* 1. ON HOLD: PENDING MANAGER APPROVAL BANNER */}
         {(booking.status === 'Pending Approval' || booking.requestStatus === 'PENDING_APPROVAL') && (
           <div className="mb-6 p-6 rounded-3xl bg-gradient-to-r from-amber-500/20 via-amber-600/10 to-[#121212] border-2 border-amber-400 shadow-[0_0_25px_rgba(245,158,11,0.2)] flex items-start gap-4 animate-fade-in">
@@ -969,8 +1008,12 @@ export default function BookingDetails() {
                   <h2 className="text-sm font-bold uppercase tracking-wider text-gray-300 flex items-center gap-2">
                     <FileText size={16} className="text-accent" /> Itemized Service Quotation
                   </h2>
-                  <span className="text-[11px] text-emerald-400 font-semibold bg-emerald-500/10 px-2.5 py-0.5 rounded-full border border-emerald-500/20">
-                    Manager Approved
+                  <span className={`text-[11px] font-bold px-2.5 py-0.5 rounded-full border ${
+                    (booking.isPaid || booking.paymentStatus === 'PAID')
+                      ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/40 shadow-sm'
+                      : 'text-emerald-400 bg-emerald-500/10 border-emerald-500/20'
+                  }`}>
+                    {(booking.isPaid || booking.paymentStatus === 'PAID') ? '✅ Bill Paid & Verified' : 'Manager Approved'}
                   </span>
                 </div>
 
@@ -1009,8 +1052,22 @@ export default function BookingDetails() {
                   )}
 
                   <div className="border-t border-white/10 pt-3 flex justify-between items-center text-sm">
-                    <span className="text-white font-bold">Total Approved Payable</span>
-                    <span className="text-accent font-extrabold font-mono text-base">₹{booking.finalBill.toFixed(2)}</span>
+                    <div>
+                      <span className="text-white font-bold block">Total Payable</span>
+                      {(booking.isPaid || booking.paymentStatus === 'PAID') ? (
+                        <span className="text-[11px] text-emerald-400 font-medium flex items-center gap-1">
+                          <CheckCircle2 size={12} /> Paid via {booking.paymentMode || 'Official Channel'}
+                        </span>
+                      ) : (
+                        <span className="text-[11px] text-amber-300 font-medium">Payment due upon completion / delivery</span>
+                      )}
+                    </div>
+                    <div className="text-right">
+                      <span className="text-accent font-extrabold font-mono text-base block">₹{booking.finalBill.toFixed(2)}</span>
+                      {(booking.isPaid || booking.paymentStatus === 'PAID') && (
+                        <span className="text-[10px] uppercase font-black text-emerald-400 tracking-wider">PAID & VEHICLE READY 🚗</span>
+                      )}
+                    </div>
                   </div>
 
                   {/* Print Invoice & WhatsApp Actions inside Quote Card */}
