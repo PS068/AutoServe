@@ -1,7 +1,7 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { ChevronLeft, ChevronRight, CheckCircle2, Calendar, Clock, Car, Settings, Check, MapPin, ShieldCheck, Tag, Sparkles, FileText } from 'lucide-react';
-import { collection, addDoc, serverTimestamp } from 'firebase/firestore';
+import { ChevronLeft, ChevronRight, CheckCircle2, Calendar, Clock, Car, Settings, Check, MapPin, ShieldCheck, Tag, Sparkles, FileText, AlertTriangle } from 'lucide-react';
+import { collection, addDoc, serverTimestamp, getDoc, doc } from 'firebase/firestore';
 import { ref, set } from 'firebase/database';
 import { db, rtdb } from '../firebase';
 import { services, timeSlots, vehicleTypes, initialOffers } from '../data/dummyData';
@@ -15,6 +15,22 @@ export default function BookService() {
   const navigate = useNavigate();
   const { currentUser, isAuthenticated } = useAuth();
   const { addToast } = useToast();
+
+  const [pickupServiceAvailable, setPickupServiceAvailable] = useState(() => {
+    try {
+      const saved = localStorage.getItem('autoserve_pickup_available');
+      return saved !== null ? JSON.parse(saved) : true;
+    } catch {
+      return true;
+    }
+  });
+  const [pickupUnavailableReason, setPickupUnavailableReason] = useState(() => {
+    try {
+      return localStorage.getItem('autoserve_pickup_reason') || 'Doorstep valet pickup is temporarily paused due to heavy bay traffic & rain conditions. Workshop Drive-In appointments only.';
+    } catch {
+      return 'Doorstep valet pickup is temporarily paused due to heavy bay traffic & rain conditions. Workshop Drive-In appointments only.';
+    }
+  });
 
   const [step, setStep] = useState(1);
   const [bookingData, setBookingData] = useState({
@@ -32,10 +48,38 @@ export default function BookService() {
       city: 'Mumbai',
       address: '',
       pincode: '',
-      pickupType: 'Doorstep Pickup & Drop'
+      pickupType: pickupServiceAvailable ? 'Doorstep Pickup & Drop' : 'Self Drive-In to Bay'
     }
   });
   const [isSubmitting, setIsSubmitting] = useState(false);
+
+  useEffect(() => {
+    async function loadConfig() {
+      try {
+        const configDoc = await getDoc(doc(db, 'settings', 'garageConfig'));
+        if (configDoc.exists()) {
+          const data = configDoc.data();
+          if (typeof data.pickupServiceAvailable === 'boolean') {
+            setPickupServiceAvailable(data.pickupServiceAvailable);
+            localStorage.setItem('autoserve_pickup_available', JSON.stringify(data.pickupServiceAvailable));
+            if (!data.pickupServiceAvailable) {
+              setBookingData(prev => ({
+                ...prev,
+                location: { ...prev.location, pickupType: 'Self Drive-In to Bay' }
+              }));
+            }
+          }
+          if (data.pickupUnavailableReason) {
+            setPickupUnavailableReason(data.pickupUnavailableReason);
+            localStorage.setItem('autoserve_pickup_reason', data.pickupUnavailableReason);
+          }
+        }
+      } catch (e) {
+        console.warn('Config load note:', e);
+      }
+    }
+    loadConfig();
+  }, []);
 
   // Load manager offers
   const offers = (() => {
@@ -345,25 +389,63 @@ export default function BookService() {
                 </div>
 
                 <div>
-                  <label className="block text-xs font-semibold uppercase tracking-wider text-gray-400 mb-2">Service Mode</label>
+                  <div className="flex items-center justify-between mb-2">
+                    <label className="text-xs font-semibold uppercase tracking-wider text-gray-400">Service Mode</label>
+                    {!pickupServiceAvailable && (
+                      <span className="text-[10px] font-bold text-rose-300 bg-rose-500/20 border border-rose-500/30 px-2 py-0.5 rounded-full">
+                        Pickup Temporarily Paused
+                      </span>
+                    )}
+                  </div>
+
+                  {!pickupServiceAvailable && (
+                    <div className="mb-3 p-3.5 rounded-2xl bg-amber-500/10 border border-amber-500/30 text-amber-300 text-xs flex items-start gap-2.5 animate-fade-in shadow-inner">
+                      <AlertTriangle size={16} className="text-amber-400 shrink-0 mt-0.5" />
+                      <div>
+                        <strong className="text-white block font-bold">Doorstep Pickup Service Currently Paused</strong>
+                        <p className="text-[11px] text-amber-200/90 leading-relaxed mt-0.5">
+                          {pickupUnavailableReason || 'Our doorstep valet fleet is temporarily unavailable. All appointments are currently accepted as Direct Workshop Drive-In only.'}
+                        </p>
+                      </div>
+                    </div>
+                  )}
+
                   <div className="flex gap-2">
-                    {['Doorstep Pickup & Drop', 'Self Drive-In to Bay'].map(mode => (
-                      <button
-                        key={mode}
-                        type="button"
-                        onClick={() => setBookingData({
-                          ...bookingData, 
-                          location: { ...bookingData.location, pickupType: mode }
-                        })}
-                        className={`flex-1 py-2.5 px-2 sm:px-3 rounded-xl border text-[11px] sm:text-xs font-semibold transition-all text-center ${
-                          bookingData.location.pickupType === mode 
-                            ? 'border-accent bg-accent/15 text-accent shadow-[0_0_10px_rgba(212,175,55,0.2)]' 
-                            : 'border-white/10 text-gray-400 bg-white/5 hover:border-white/20'
-                        }`}
-                      >
-                        {mode}
-                      </button>
-                    ))}
+                    {[
+                      { id: 'Doorstep Pickup & Drop', label: 'Doorstep Pickup & Drop', disabled: !pickupServiceAvailable },
+                      { id: 'Self Drive-In to Bay', label: 'Self Drive-In to Bay', disabled: false }
+                    ].map(mode => {
+                      const isSelected = bookingData.location.pickupType === mode.id;
+                      return (
+                        <button
+                          key={mode.id}
+                          type="button"
+                          disabled={mode.disabled}
+                          onClick={() => {
+                            if (mode.disabled) {
+                              addToast('Doorstep Pickup is currently paused by garage management.', 'info');
+                              return;
+                            }
+                            setBookingData({
+                              ...bookingData, 
+                              location: { ...bookingData.location, pickupType: mode.id }
+                            });
+                          }}
+                          className={`flex-1 py-2.5 px-2 sm:px-3 rounded-xl border text-[11px] sm:text-xs font-semibold transition-all text-center flex flex-col items-center justify-center gap-0.5 ${
+                            mode.disabled
+                              ? 'opacity-40 border-white/5 bg-white/5 cursor-not-allowed text-gray-500'
+                              : isSelected 
+                              ? 'border-accent bg-accent/15 text-accent shadow-[0_0_10px_rgba(212,175,55,0.2)]' 
+                              : 'border-white/10 text-gray-400 bg-white/5 hover:border-white/20'
+                          }`}
+                        >
+                          <span>{mode.label}</span>
+                          {mode.disabled && (
+                            <span className="text-[9px] text-rose-400 font-bold uppercase">(Unavailable)</span>
+                          )}
+                        </button>
+                      );
+                    })}
                   </div>
                 </div>
               </div>

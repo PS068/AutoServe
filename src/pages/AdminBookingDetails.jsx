@@ -154,6 +154,17 @@ export default function AdminBookingDetails() {
             return aTime - bTime;
           });
         setChats(chatItems);
+
+        try {
+          const configDoc = await getDoc(doc(db, 'settings', 'garageConfig'));
+          if (configDoc.exists()) {
+            const cfg = configDoc.data();
+            if (Array.isArray(cfg.offers) && cfg.offers.length > 0) {
+              setOffers(cfg.offers);
+              localStorage.setItem('autoserve_manager_offers', JSON.stringify(cfg.offers));
+            }
+          }
+        } catch (cfgErr) {}
       } catch (error) {
         console.error('Failed to load admin booking details:', error);
         addToast(`Unable to load booking details: ${error.message}`, 'error');

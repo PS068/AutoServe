@@ -7,7 +7,7 @@ import {
   Calendar, DollarSign, X, Check, Gift, Sun, CloudRain, Snowflake, FlameKindling,
   BarChart3, Trash2
 } from 'lucide-react';
-import { collection, query, orderBy, getDocs, doc, setDoc, deleteDoc } from 'firebase/firestore';
+import { collection, query, orderBy, getDocs, doc, setDoc, deleteDoc, getDoc } from 'firebase/firestore';
 import { ref, set } from 'firebase/database';
 import { db, rtdb } from '../firebase';
 import { initialOffers, services } from '../data/dummyData';
@@ -22,6 +22,24 @@ export default function AdminDashboard() {
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [activeTab, setActiveTab] = useState('board'); // 'board' | 'offers'
   const [showIntelligencePanel, setShowIntelligencePanel] = useState(false);
+
+  // Garage Operational Policy & Doorstep Pickup State
+  const [pickupServiceAvailable, setPickupServiceAvailable] = useState(() => {
+    try {
+      const saved = localStorage.getItem('autoserve_pickup_available');
+      return saved !== null ? JSON.parse(saved) : true;
+    } catch {
+      return true;
+    }
+  });
+  const [pickupUnavailableReason, setPickupUnavailableReason] = useState(() => {
+    try {
+      return localStorage.getItem('autoserve_pickup_reason') || 'Doorstep valet pickup is temporarily paused due to heavy bay traffic & rain conditions. Workshop Drive-In appointments only.';
+    } catch {
+      return 'Doorstep valet pickup is temporarily paused due to heavy bay traffic & rain conditions. Workshop Drive-In appointments only.';
+    }
+  });
+  const [isSavingConfig, setIsSavingConfig] = useState(false);
 
   // Vehicle Intake Modal State
   const [isAddVehicleOpen, setIsAddVehicleOpen] = useState(false);
@@ -84,8 +102,32 @@ export default function AdminDashboard() {
     }
   };
 
+  const loadGarageConfig = async () => {
+    try {
+      const configDoc = await getDoc(doc(db, 'settings', 'garageConfig'));
+      if (configDoc.exists()) {
+        const data = configDoc.data();
+        if (typeof data.pickupServiceAvailable === 'boolean') {
+          setPickupServiceAvailable(data.pickupServiceAvailable);
+          localStorage.setItem('autoserve_pickup_available', JSON.stringify(data.pickupServiceAvailable));
+        }
+        if (data.pickupUnavailableReason) {
+          setPickupUnavailableReason(data.pickupUnavailableReason);
+          localStorage.setItem('autoserve_pickup_reason', data.pickupUnavailableReason);
+        }
+        if (Array.isArray(data.offers) && data.offers.length > 0) {
+          setOffers(data.offers);
+          localStorage.setItem('autoserve_manager_offers', JSON.stringify(data.offers));
+        }
+      }
+    } catch (e) {
+      console.warn('Garage config load note:', e);
+    }
+  };
+
   useEffect(() => {
     loadBookings();
+    loadGarageConfig();
   }, []);
 
   const handleLogout = () => {
@@ -94,48 +136,97 @@ export default function AdminDashboard() {
     navigate('/login');
   };
 
-  const handlePurgeDatabase = async () => {
-    if (!window.confirm("⚠️ ARE YOU SURE? This will permanently wipe all users, active bookings, chats, and records to give you a 100% fresh, empty database!")) {
+  // Toggle Doorstep Pickup Availability
+  const handleTogglePickupService = async (newVal) => {
+    try {
+      setIsSavingConfig(true);
+      setPickupServiceAvailable(newVal);
+      localStorage.setItem('autoserve_pickup_available', JSON.stringify(newVal));
+
+      await setDoc(doc(db, 'settings', 'garageConfig'), {
+        pickupServiceAvailable: newVal,
+        pickupUnavailableReason,
+        offers,
+        updatedAt: new Date().toISOString()
+      }, { merge: true });
+
+      try {
+        await set(ref(rtdb, 'settings/pickupServiceAvailable'), newVal);
+      } catch (rtdbErr) {}
+
+      addToast(
+        newVal 
+          ? '✅ Doorstep Pickup & Drop is now AVAILABLE for customers!' 
+          : '⚠️ Doorstep Pickup & Drop DISABLED. Customers can only select Direct Workshop Drive-In.',
+        newVal ? 'success' : 'info'
+      );
+    } catch (err) {
+      console.error('Error saving pickup setting:', err);
+      addToast(`Error saving setting: ${err.message}`, 'error');
+    } finally {
+      setIsSavingConfig(false);
+    }
+  };
+
+  const handleSavePickupReason = async () => {
+    try {
+      setIsSavingConfig(true);
+      localStorage.setItem('autoserve_pickup_reason', pickupUnavailableReason);
+
+      await setDoc(doc(db, 'settings', 'garageConfig'), {
+        pickupServiceAvailable,
+        pickupUnavailableReason,
+        offers,
+        updatedAt: new Date().toISOString()
+      }, { merge: true });
+
+      addToast('Garage operational policy note updated for customers!', 'success');
+    } catch (err) {
+      console.error('Error saving notice:', err);
+      addToast(`Error saving notice: ${err.message}`, 'error');
+    } finally {
+      setIsSavingConfig(false);
+    }
+  };
+
+  const handleDeleteOffer = async (offerId) => {
+    const toDelete = offers.find(o => o.id === offerId);
+    if (!window.confirm(`Are you sure you want to permanently remove discount code "${toDelete?.code || offerId}"?`)) {
       return;
     }
 
+    const updated = offers.filter(o => o.id !== offerId);
+    setOffers(updated);
     try {
-      setIsRefreshing(true);
-      const cols = ['bookings', 'bookingChats', 'bookingStatusLogs', 'users'];
-      for (const colName of cols) {
-        const snap = await getDocs(collection(db, colName));
-        for (const d of snap.docs) {
-          await deleteDoc(doc(db, colName, d.id));
-        }
-      }
-
-      await setDoc(doc(db, 'users', 'admin-1'), {
-        uid: 'admin-1',
-        name: 'AutoServe Administrator',
-        email: 'admin@autoserve.com',
-        phone: '+91 9876500000',
-        role: 'admin',
-        isPhoneConfirmed: true,
-        createdAt: new Date().toISOString()
-      });
-
-      localStorage.removeItem('autoserve_registered_users');
-      localStorage.setItem('autoserve_registered_users', JSON.stringify([{
-        uid: 'admin-1',
-        name: 'AutoServe Administrator',
-        email: 'admin@autoserve.com',
-        phone: '+91 9876500000',
-        role: 'admin',
-        createdAt: new Date().toISOString()
-      }]));
-
-      setBookings([]);
-      addToast('Database completely purged! System is 100% fresh and clean.', 'success');
+      localStorage.setItem('autoserve_manager_offers', JSON.stringify(updated));
+      await setDoc(doc(db, 'settings', 'garageConfig'), {
+        offers: updated,
+        pickupServiceAvailable,
+        pickupUnavailableReason,
+        updatedAt: new Date().toISOString()
+      }, { merge: true });
+      addToast(`Discount '${toDelete?.code || ''}' removed successfully.`, 'info');
     } catch (e) {
-      console.error('Purge error:', e);
-      addToast(`Purge notice: ${e.message}`, 'error');
-    } finally {
-      setIsRefreshing(false);
+      console.error(e);
+      addToast(`Error deleting offer: ${e.message}`, 'error');
+    }
+  };
+
+  const handleToggleOfferActive = async (offerId) => {
+    const updated = offers.map(o => o.id === offerId ? { ...o, active: o.active === false ? true : false } : o);
+    setOffers(updated);
+    try {
+      localStorage.setItem('autoserve_manager_offers', JSON.stringify(updated));
+      await setDoc(doc(db, 'settings', 'garageConfig'), {
+        offers: updated,
+        pickupServiceAvailable,
+        pickupUnavailableReason,
+        updatedAt: new Date().toISOString()
+      }, { merge: true });
+      const target = updated.find(o => o.id === offerId);
+      addToast(`Discount '${target?.code}' is now ${target?.active ? 'ACTIVE' : 'PAUSED'}.`, 'info');
+    } catch (e) {
+      console.error(e);
     }
   };
 
@@ -239,7 +330,7 @@ export default function AdminDashboard() {
   };
 
   // Handle Seasonal Offer Creation
-  const handleCreateOffer = (e) => {
+  const handleCreateOffer = async (e) => {
     e.preventDefault();
     if (!newOffer.code || !newOffer.title || !newOffer.discountValue) {
       addToast('Please fill in Offer Code, Title, and Discount Value.', 'error');
@@ -255,18 +346,26 @@ export default function AdminDashboard() {
       discountValue: Number(newOffer.discountValue),
       isSeasonal: Boolean(newOffer.isSeasonal),
       seasonName: newOffer.isSeasonal ? newOffer.seasonName : '',
-      validUntil: newOffer.validUntil || 'End of Season'
+      validUntil: newOffer.validUntil || 'End of Season',
+      active: true,
+      createdAt: new Date().toISOString()
     };
 
     const updated = [created, ...offers];
     setOffers(updated);
     try {
       localStorage.setItem('autoserve_manager_offers', JSON.stringify(updated));
+      await setDoc(doc(db, 'settings', 'garageConfig'), {
+        offers: updated,
+        pickupServiceAvailable,
+        pickupUnavailableReason,
+        updatedAt: new Date().toISOString()
+      }, { merge: true });
     } catch (e) {
-      console.error(e);
+      console.error('Error persisting new offer:', e);
     }
     setIsCreateOfferOpen(false);
-    addToast(`Offer '${created.code}' activated for manager quote engine!`, 'success');
+    addToast(`Discount Code '${created.code}' created and activated across the system!`, 'success');
 
     setNewOffer({
       code: '',
@@ -454,15 +553,8 @@ export default function AdminDashboard() {
               <BarChart3 size={15} /> Intelligence Panel
             </button>
             <button
-              onClick={handlePurgeDatabase}
-              title="Wipe all data and start completely fresh"
-              className="px-3.5 py-2.5 rounded-2xl bg-rose-500/10 hover:bg-rose-500/20 text-rose-300 border border-rose-500/30 text-xs font-bold flex items-center gap-1.5 transition-all shadow-sm active:scale-95"
-            >
-              <Trash2 size={14} className="text-rose-400" /> Purge & Fresh Start
-            </button>
-            <button
               onClick={handleLogout}
-              className="px-3 py-2.5 rounded-2xl bg-white/5 hover:bg-rose-500/10 text-slate-400 hover:text-rose-300 border border-white/10 text-xs font-semibold flex items-center gap-1.5 transition-all"
+              className="px-3.5 py-2.5 rounded-2xl bg-white/5 hover:bg-rose-500/10 text-slate-400 hover:text-rose-300 border border-white/10 text-xs font-semibold flex items-center gap-1.5 transition-all"
             >
               <LogOut size={14} /> Exit
             </button>
@@ -831,24 +923,93 @@ export default function AdminDashboard() {
           </>
         )}
 
-        {/* TAB 2: SEASONAL OFFERS & PRICING CONTROLS */}
+        {/* TAB 2: SEASONAL OFFERS & GARAGE OPERATIONS */}
         {activeTab === 'offers' && (
           <div className="space-y-6 animate-fade-in">
+            
+            {/* 1. GARAGE OWNER OPERATIONS & DOORSTEP PICKUP CONTROL */}
+            <div className="p-6 rounded-3xl border border-sky-500/30 bg-gradient-to-r from-[#0a1528]/95 via-[#0d1c38]/90 to-[#07101f] backdrop-blur-xl space-y-4 shadow-2xl">
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 border-b border-white/10 pb-4">
+                <div>
+                  <div className="flex items-center gap-2 mb-1">
+                    <span className="text-[10px] uppercase font-black tracking-wider px-2.5 py-0.5 rounded-full bg-sky-500/20 text-sky-300 border border-sky-500/30">
+                      Garage Owner Policy
+                    </span>
+                    <span className={`text-[11px] font-bold px-3 py-0.5 rounded-full border ${
+                      pickupServiceAvailable 
+                        ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/40 shadow-[0_0_15px_rgba(16,185,129,0.25)]' 
+                        : 'bg-rose-500/20 text-rose-300 border-rose-500/40'
+                    }`}>
+                      {pickupServiceAvailable ? '🟢 Doorstep Pickup: ACTIVE & AVAILABLE' : '🔴 Doorstep Pickup: DISABLED (Workshop Only)'}
+                    </span>
+                  </div>
+                  <h2 className="text-lg font-black text-white flex items-center gap-2">
+                    <MapPin className="text-sky-400" size={20} /> Doorstep Pickup & Valet Fleet Availability
+                  </h2>
+                  <p className="text-xs text-slate-300 mt-0.5">
+                    When disabled, customers booking online cannot select Doorstep Pickup and are automatically set to Direct Workshop Drive-In.
+                  </p>
+                </div>
+
+                <div className="flex items-center gap-3">
+                  <button
+                    type="button"
+                    disabled={isSavingConfig}
+                    onClick={() => handleTogglePickupService(!pickupServiceAvailable)}
+                    className={`px-5 py-2.5 rounded-2xl font-black text-xs flex items-center gap-2 transition-all shadow-lg active:scale-95 ${
+                      pickupServiceAvailable
+                        ? 'bg-rose-500/20 hover:bg-rose-500/30 text-rose-300 border border-rose-500/40 shadow-rose-500/10'
+                        : 'bg-gradient-to-r from-emerald-400 to-teal-400 hover:brightness-110 text-slate-950 shadow-emerald-500/25'
+                    }`}
+                  >
+                    {pickupServiceAvailable ? '⛔ Pause / Turn OFF Pickup Service' : '✅ Turn ON & Enable Pickup Service'}
+                  </button>
+                </div>
+              </div>
+
+              {/* Customer Notice if Pickup is Disabled */}
+              {!pickupServiceAvailable && (
+                <div className="p-4 rounded-2xl bg-amber-500/10 border border-amber-500/30 space-y-2 text-xs">
+                  <label className="block text-amber-300 font-bold">
+                    Custom Notice to Show Customers on Booking Form:
+                  </label>
+                  <div className="flex flex-col sm:flex-row gap-2">
+                    <input
+                      type="text"
+                      value={pickupUnavailableReason}
+                      onChange={(e) => setPickupUnavailableReason(e.target.value)}
+                      placeholder="e.g. Doorstep valet pickup is temporarily paused due to heavy monsoon rains. Workshop Drive-In only."
+                      className="flex-1 bg-black/60 border border-white/10 rounded-xl px-3.5 py-2 text-white outline-none focus:border-amber-400 text-xs"
+                    />
+                    <button
+                      type="button"
+                      disabled={isSavingConfig}
+                      onClick={handleSavePickupReason}
+                      className="px-4 py-2 rounded-xl bg-amber-400 hover:bg-amber-300 text-slate-950 font-bold text-xs shadow-md transition-all active:scale-95 shrink-0"
+                    >
+                      Update Customer Notice
+                    </button>
+                  </div>
+                </div>
+              )}
+            </div>
+
+            {/* 2. SEASONAL OFFERS & PRICING ENGINE */}
             <div className="p-6 rounded-3xl border border-white/10 bg-gradient-to-r from-[#0d1322]/90 via-[#0e172a]/85 to-[#0b101c]/90 backdrop-blur-xl flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 shadow-xl">
               <div>
                 <h2 className="text-lg font-extrabold text-white flex items-center gap-2">
-                  <Tag className="text-amber-400" size={20} /> Seasonal Discounts & Manager Pricing Engine
+                  <Tag className="text-amber-400" size={20} /> Seasonal Discounts & Manager Pricing Engine ({offers.length})
                 </h2>
                 <p className="text-xs text-slate-400 mt-0.5">
-                  Configure seasonal promotions (Monsoon, Festive, Summer, Winter) applied during manager quotation.
+                  Create, pause, or remove promotions (Monsoon, Festive, Summer, Winter) applied during manager quotation.
                 </p>
               </div>
               <div className="flex items-center gap-2">
                 <button
                   onClick={() => setIsCreateOfferOpen(true)}
-                  className="px-4 py-2 rounded-xl bg-gradient-to-r from-amber-400 to-amber-500 hover:from-amber-300 hover:to-amber-400 text-slate-950 font-black text-xs flex items-center gap-1.5 transition-all shadow-md"
+                  className="px-4 py-2 rounded-xl bg-gradient-to-r from-amber-400 to-amber-500 hover:from-amber-300 hover:to-amber-400 text-slate-950 font-black text-xs flex items-center gap-1.5 transition-all shadow-md active:scale-95"
                 >
-                  <Plus size={14} /> Add Seasonal Offer
+                  <Plus size={14} /> Add New Discount
                 </button>
                 <button
                   onClick={() => setActiveTab('board')}
@@ -867,39 +1028,95 @@ export default function AdminDashboard() {
                 if (offer.seasonName?.toLowerCase().includes('winter')) seasonIcon = <Snowflake size={13} className="text-cyan-300" />;
                 if (offer.seasonName?.toLowerCase().includes('festive')) seasonIcon = <FlameKindling size={13} className="text-rose-400" />;
 
+                const isOfferActive = offer.active !== false;
+
                 return (
-                  <div key={offer.id} className="p-5 rounded-3xl border border-amber-500/20 bg-gradient-to-br from-[#0e172a]/90 via-[#0b101c] to-[#080d1a] backdrop-blur-xl space-y-3 shadow-lg hover:border-amber-400/40 transition-all">
-                    <div className="flex items-center justify-between">
-                      <span className="text-xs font-mono font-extrabold text-amber-300 bg-amber-500/20 border border-amber-500/30 px-3 py-1 rounded-xl tracking-wider">
-                        {offer.code}
-                      </span>
-                      {offer.isSeasonal ? (
-                        <span className="flex items-center gap-1 text-[10px] text-amber-300 font-bold px-2.5 py-0.5 rounded-full bg-amber-500/15 border border-amber-500/30">
-                          {seasonIcon} {offer.seasonName || 'Seasonal Promo'}
+                  <div key={offer.id} className={`p-5 rounded-3xl border transition-all space-y-3 backdrop-blur-xl relative flex flex-col justify-between ${
+                    isOfferActive 
+                      ? 'border-amber-500/20 bg-gradient-to-br from-[#0e172a]/90 via-[#0b101c] to-[#080d1a] shadow-lg hover:border-amber-400/50' 
+                      : 'border-white/5 bg-[#080b12]/80 opacity-70'
+                  }`}>
+                    <div>
+                      <div className="flex items-center justify-between gap-2 mb-2">
+                        <span className="text-xs font-mono font-extrabold text-amber-300 bg-amber-500/20 border border-amber-500/30 px-3 py-1 rounded-xl tracking-wider">
+                          {offer.code}
                         </span>
-                      ) : (
-                        <span className="text-[10px] text-emerald-400 font-bold px-2.5 py-0.5 rounded-full bg-emerald-500/15 border border-emerald-500/30">
-                          ● Regular Offer
-                        </span>
-                      )}
+                        <div className="flex items-center gap-1.5">
+                          {offer.isSeasonal ? (
+                            <span className="flex items-center gap-1 text-[10px] text-amber-300 font-bold px-2 py-0.5 rounded-full bg-amber-500/15 border border-amber-500/30">
+                              {seasonIcon} {offer.seasonName || 'Seasonal'}
+                            </span>
+                          ) : (
+                            <span className="text-[10px] text-emerald-400 font-bold px-2 py-0.5 rounded-full bg-emerald-500/15 border border-emerald-500/30">
+                              ● Regular
+                            </span>
+                          )}
+                          <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full border ${
+                            isOfferActive 
+                              ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/40' 
+                              : 'bg-slate-700/40 text-slate-400 border-slate-600'
+                          }`}>
+                            {isOfferActive ? 'Active' : 'Paused'}
+                          </span>
+                        </div>
+                      </div>
+                      
+                      <h3 className="text-sm font-black text-white">{offer.title}</h3>
+                      <p className="text-xs text-slate-400 line-clamp-2 leading-relaxed mt-1">{offer.description}</p>
                     </div>
                     
-                    <h3 className="text-sm font-black text-white">{offer.title}</h3>
-                    <p className="text-xs text-slate-400 line-clamp-2 leading-relaxed">{offer.description}</p>
-                    
-                    <div className="pt-2 border-t border-white/5 flex items-center justify-between">
-                      <p className="text-xs font-black text-amber-400">
-                        {offer.discountType === 'percentage' ? `${offer.discountValue}% OFF` : `₹${offer.discountValue} FLAT DISCOUNT`}
-                      </p>
-                      {offer.validUntil && (
-                        <span className="text-[10px] text-slate-400 font-mono">
-                          Expires: {offer.validUntil}
-                        </span>
-                      )}
+                    <div className="pt-3 border-t border-white/5 space-y-3">
+                      <div className="flex items-center justify-between text-xs">
+                        <p className="font-black text-amber-400">
+                          {offer.discountType === 'percentage' ? `${offer.discountValue}% OFF` : `₹${offer.discountValue} FLAT DISCOUNT`}
+                        </p>
+                        {offer.validUntil && (
+                          <span className="text-[10px] text-slate-400 font-mono">
+                            Expires: {offer.validUntil}
+                          </span>
+                        )}
+                      </div>
+
+                      {/* Offer Actions: Pause & Delete */}
+                      <div className="flex items-center justify-between gap-2 pt-2 border-t border-white/5">
+                        <button
+                          type="button"
+                          onClick={() => handleToggleOfferActive(offer.id)}
+                          className={`px-3 py-1 rounded-lg text-[11px] font-bold transition-all border ${
+                            isOfferActive 
+                              ? 'bg-white/5 hover:bg-amber-500/20 text-slate-300 hover:text-amber-300 border-white/10' 
+                              : 'bg-emerald-500/15 hover:bg-emerald-500/25 text-emerald-300 border-emerald-500/30'
+                          }`}
+                        >
+                          {isOfferActive ? 'Pause Code' : 'Activate Code'}
+                        </button>
+
+                        <button
+                          type="button"
+                          title="Remove discount code"
+                          onClick={() => handleDeleteOffer(offer.id)}
+                          className="p-1.5 rounded-lg bg-rose-500/10 hover:bg-rose-500/25 text-rose-400 hover:text-rose-300 border border-rose-500/30 transition-all active:scale-95 flex items-center gap-1 text-[11px] font-semibold"
+                        >
+                          <Trash2 size={13} /> Remove
+                        </button>
+                      </div>
                     </div>
                   </div>
                 );
               })}
+
+              {offers.length === 0 && (
+                <div className="col-span-full p-10 text-center rounded-3xl border border-white/10 bg-white/3 backdrop-blur-xl">
+                  <Tag className="mx-auto text-slate-600 mb-2" size={32} />
+                  <p className="text-slate-400 text-sm font-semibold">No discount codes currently configured.</p>
+                  <button
+                    onClick={() => setIsCreateOfferOpen(true)}
+                    className="mt-3 px-4 py-2 rounded-xl bg-amber-400 text-slate-950 font-bold text-xs"
+                  >
+                    + Add First Discount Code
+                  </button>
+                </div>
+              )}
             </div>
           </div>
         )}
