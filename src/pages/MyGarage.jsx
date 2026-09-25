@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
-import { CalendarDays, Car, History, Clock, ChevronRight, Activity, Wrench, CheckCircle, ShieldCheck, LogOut, PlusCircle, Lock, Flame } from 'lucide-react';
+import { CalendarDays, Car, History, Clock, ChevronRight, ChevronLeft, Activity, Wrench, CheckCircle, ShieldCheck, LogOut, PlusCircle, Lock, Flame, Home } from 'lucide-react';
 import { STATUS_FLOW } from '../data/dummyData';
 import { collection, query, where, getDocs } from 'firebase/firestore';
 import { db } from '../firebase';
@@ -163,8 +163,22 @@ export default function MyGarage() {
 
   return (
     <div className="min-h-screen bg-[#050505] pt-24 pb-16 animate-fade-in text-white">
-      <div className="max-w-6xl mx-auto px-4 sm:px-6 lg:px-8 space-y-8">
+      <div className="max-w-6xl mx-auto px-4 sm:px-6 lg:px-8 space-y-6">
         
+        {/* Back to Home Navigation Bar */}
+        <div className="flex items-center justify-between">
+          <Link 
+            to="/" 
+            className="inline-flex items-center gap-2 text-xs font-bold uppercase tracking-wider text-gray-300 hover:text-white bg-white/5 hover:bg-white/10 border border-white/10 px-4 py-2 rounded-full transition-all group active:scale-95 shadow-sm"
+          >
+            <ChevronLeft size={16} className="text-accent group-hover:-translate-x-1 transition-transform" />
+            Back to Home
+          </Link>
+          <span className="text-xs text-gray-500 font-mono hidden sm:inline-block">
+            AutoServe Garage Hub
+          </span>
+        </div>
+
         {/* Header Hero */}
         <div className="glass-panel border border-white/10 p-6 sm:p-8 rounded-3xl shadow-2xl flex flex-col md:flex-row items-start md:items-center justify-between gap-6">
           <div>
