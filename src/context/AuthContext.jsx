@@ -186,13 +186,6 @@ export const AuthProvider = ({ children }) => {
     }
 
     if (!matchedUser) {
-      // Allow demo customer Sarah Jenkins if phone/email matches
-      if (cleanInput.includes('sarah') || digitsOnly === '9876543210') {
-        matchedUser = defaultUsers.find(u => u.uid === 'cust-1');
-      }
-    }
-
-    if (!matchedUser) {
       throw new Error(isEmail 
         ? 'No account found with this email address. Please check or create an account.'
         : 'No account found with this phone number. Please check or create an account.');

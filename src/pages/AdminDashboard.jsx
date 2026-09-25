@@ -5,9 +5,9 @@ import {
   Tag, Plus, CheckCircle2, Percent, Clock, AlertTriangle, Flame, Lock, Layers, 
   Activity, CheckSquare, Sparkles, Filter, Wrench, ArrowUpRight, Zap, MapPin, 
   Calendar, DollarSign, X, Check, Gift, Sun, CloudRain, Snowflake, FlameKindling,
-  BarChart3
+  BarChart3, Trash2
 } from 'lucide-react';
-import { collection, query, orderBy, getDocs, doc, setDoc } from 'firebase/firestore';
+import { collection, query, orderBy, getDocs, doc, setDoc, deleteDoc } from 'firebase/firestore';
 import { ref, set } from 'firebase/database';
 import { db, rtdb } from '../firebase';
 import { initialOffers, services } from '../data/dummyData';
@@ -92,6 +92,51 @@ export default function AdminDashboard() {
     logout();
     addToast('Logged out of Manager Command Center.', 'info');
     navigate('/login');
+  };
+
+  const handlePurgeDatabase = async () => {
+    if (!window.confirm("⚠️ ARE YOU SURE? This will permanently wipe all users, active bookings, chats, and records to give you a 100% fresh, empty database!")) {
+      return;
+    }
+
+    try {
+      setIsRefreshing(true);
+      const cols = ['bookings', 'bookingChats', 'bookingStatusLogs', 'users'];
+      for (const colName of cols) {
+        const snap = await getDocs(collection(db, colName));
+        for (const d of snap.docs) {
+          await deleteDoc(doc(db, colName, d.id));
+        }
+      }
+
+      await setDoc(doc(db, 'users', 'admin-1'), {
+        uid: 'admin-1',
+        name: 'AutoServe Administrator',
+        email: 'admin@autoserve.com',
+        phone: '+91 9876500000',
+        role: 'admin',
+        isPhoneConfirmed: true,
+        createdAt: new Date().toISOString()
+      });
+
+      localStorage.removeItem('autoserve_registered_users');
+      localStorage.setItem('autoserve_registered_users', JSON.stringify([{
+        uid: 'admin-1',
+        name: 'AutoServe Administrator',
+        email: 'admin@autoserve.com',
+        phone: '+91 9876500000',
+        role: 'admin',
+        createdAt: new Date().toISOString()
+      }]));
+
+      setBookings([]);
+      addToast('Database completely purged! System is 100% fresh and clean.', 'success');
+    } catch (e) {
+      console.error('Purge error:', e);
+      addToast(`Purge notice: ${e.message}`, 'error');
+    } finally {
+      setIsRefreshing(false);
+    }
   };
 
   // Handle Quick Add Vehicle Intake by Manager
@@ -407,6 +452,13 @@ export default function AdminDashboard() {
               className="px-4 py-2.5 rounded-2xl bg-gradient-to-r from-violet-600 to-purple-700 hover:from-violet-500 hover:to-purple-600 text-white font-extrabold text-xs flex items-center gap-2 shadow-lg shadow-violet-500/25 active:scale-95 transition-all border border-violet-400/30"
             >
               <BarChart3 size={15} /> Intelligence Panel
+            </button>
+            <button
+              onClick={handlePurgeDatabase}
+              title="Wipe all data and start completely fresh"
+              className="px-3.5 py-2.5 rounded-2xl bg-rose-500/10 hover:bg-rose-500/20 text-rose-300 border border-rose-500/30 text-xs font-bold flex items-center gap-1.5 transition-all shadow-sm active:scale-95"
+            >
+              <Trash2 size={14} className="text-rose-400" /> Purge & Fresh Start
             </button>
             <button
               onClick={handleLogout}
